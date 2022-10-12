@@ -2,7 +2,7 @@ use arc_swap::{access::Map, ArcSwap};
 use futures_util::Stream;
 use helix_core::{
     config::{default_syntax_loader, user_syntax_loader},
-    diagnostic::NumberOrString,
+    diagnostic::{DiagnosticTag, NumberOrString},
     pos_at_coords, syntax, Selection,
 };
 use helix_lsp::{lsp, util::lsp_pos_to_pos, LspProgressMap};
@@ -157,7 +157,7 @@ impl Application {
         compositor.push(editor_view);
 
         if args.load_tutor {
-            let path = helix_loader::runtime_dir().join("tutor.txt");
+            let path = helix_loader::runtime_dir().join("tutor");
             editor.open(&path, Action::VerticalSplit)?;
             // Unset path to prevent accidentally saving to the original tutor file.
             doc_mut!(editor).set_path(None)?;
@@ -224,8 +224,8 @@ impl Application {
         #[cfg(windows)]
         let signals = futures_util::stream::empty();
         #[cfg(not(windows))]
-        let signals =
-            Signals::new(&[signal::SIGTSTP, signal::SIGCONT]).context("build signal handler")?;
+        let signals = Signals::new(&[signal::SIGTSTP, signal::SIGCONT, signal::SIGUSR1])
+            .context("build signal handler")?;
 
         let app = Self {
             compositor,
@@ -366,29 +366,39 @@ impl Application {
         self.editor.refresh_config();
     }
 
-    fn refresh_config(&mut self) {
-        let config = Config::load_default().unwrap_or_else(|err| {
-            self.editor.set_error(err.to_string());
-            Config::default()
-        });
-
-        // Refresh theme
+    /// Refresh theme after config change
+    fn refresh_theme(&mut self, config: &Config) {
         if let Some(theme) = config.theme.clone() {
             let true_color = self.true_color();
-            self.editor.set_theme(
-                self.theme_loader
-                    .load(&theme)
-                    .map_err(|e| {
-                        log::warn!("failed to load theme `{}` - {}", theme, e);
-                        e
-                    })
-                    .ok()
-                    .filter(|theme| (true_color || theme.is_16_color()))
-                    .unwrap_or_else(|| self.theme_loader.default_theme(true_color)),
-            );
+            match self.theme_loader.load(&theme) {
+                Ok(theme) => {
+                    if true_color || theme.is_16_color() {
+                        self.editor.set_theme(theme);
+                    } else {
+                        self.editor
+                            .set_error("theme requires truecolor support, which is not available");
+                    }
+                }
+                Err(err) => {
+                    let err_string = format!("failed to load theme `{}` - {}", theme, err);
+                    self.editor.set_error(err_string);
+                }
+            }
         }
+    }
 
-        self.config.store(Arc::new(config));
+    fn refresh_config(&mut self) {
+        match Config::load_default() {
+            Ok(config) => {
+                self.refresh_theme(&config);
+
+                // Store new config
+                self.config.store(Arc::new(config));
+            }
+            Err(err) => {
+                self.editor.set_error(err.to_string());
+            }
+        }
     }
 
     fn true_color(&self) -> bool {
@@ -416,23 +426,22 @@ impl Application {
                 self.compositor.load_cursor();
                 self.render();
             }
+            signal::SIGUSR1 => {
+                self.refresh_config();
+                self.render();
+            }
             _ => unreachable!(),
         }
     }
 
     pub fn handle_idle_timeout(&mut self) {
-        use crate::compositor::EventResult;
-        let editor_view = self
-            .compositor
-            .find::<ui::EditorView>()
-            .expect("expected at least one EditorView");
-
         let mut cx = crate::compositor::Context {
             editor: &mut self.editor,
             jobs: &mut self.jobs,
             scroll: None,
         };
-        if let EventResult::Consumed(_) = editor_view.handle_idle_timeout(&mut cx) {
+        let should_render = self.compositor.handle_event(&Event::IdleTimeout, &mut cx);
+        if should_render {
             self.render();
         }
     }
@@ -595,13 +604,28 @@ impl Application {
                                         None => None,
                                     };
 
+                                    let tags = if let Some(ref tags) = diagnostic.tags {
+                                        let new_tags = tags.iter().filter_map(|tag| {
+                                            match *tag {
+                                                lsp::DiagnosticTag::DEPRECATED => Some(DiagnosticTag::Deprecated),
+                                                lsp::DiagnosticTag::UNNECESSARY => Some(DiagnosticTag::Unnecessary),
+                                                _ => None
+                                            }
+                                        }).collect();
+
+                                        new_tags
+                                    } else {
+                                        Vec::new()
+                                    };
+
                                     Some(Diagnostic {
                                         range: Range { start, end },
                                         line: diagnostic.range.start.line as usize,
                                         message: diagnostic.message.clone(),
                                         severity,
                                         code,
-                                        // source
+                                        tags,
+                                        source: diagnostic.source.clone()
                                     })
                                 })
                                 .collect();
@@ -841,8 +865,15 @@ impl Application {
         }));
 
         self.event_loop(input_stream).await;
-        self.close().await?;
+
+        let err = self.close().await.err();
+
         restore_term()?;
+
+        if let Some(err) = err {
+            self.editor.exit_code = 1;
+            eprintln!("Error: {}", err);
+        }
 
         Ok(self.editor.exit_code)
     }

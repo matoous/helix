@@ -5,6 +5,7 @@ use helix_core::auto_pairs::AutoPairs;
 use helix_core::Range;
 use serde::de::{self, Deserialize, Deserializer};
 use serde::Serialize;
+use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::fmt::Display;
@@ -23,7 +24,7 @@ use helix_core::{
     DEFAULT_LINE_ENDING,
 };
 
-use crate::{DocumentId, Editor, ViewId};
+use crate::{apply_transaction, DocumentId, Editor, View, ViewId};
 
 /// 8kB of buffer space for encoding and decoding `Rope`s.
 const BUF_SIZE: usize = 8192;
@@ -543,12 +544,19 @@ impl Document {
             }
 
             if let Some(fmt) = formatting {
-                let transaction = fmt.await?;
-                let success = transaction.changes().apply(&mut text);
-                if !success {
-                    // This shouldn't happen, because the transaction changes were generated
-                    // from the same text we're saving.
-                    log::error!("failed to apply format changes before saving");
+                match fmt.await {
+                    Ok(transaction) => {
+                        let success = transaction.changes().apply(&mut text);
+                        if !success {
+                            // This shouldn't happen, because the transaction changes were generated
+                            // from the same text we're saving.
+                            log::error!("failed to apply format changes before saving");
+                        }
+                    }
+                    Err(err) => {
+                        // formatting failed: report error, and save file without modifications
+                        log::error!("{}", err);
+                    }
                 }
             }
 
@@ -593,7 +601,7 @@ impl Document {
     }
 
     /// Reload the document from its path.
-    pub fn reload(&mut self, view_id: ViewId) -> Result<(), Error> {
+    pub fn reload(&mut self, view: &mut View) -> Result<(), Error> {
         let encoding = &self.encoding;
         let path = self.path().filter(|path| path.exists());
 
@@ -609,8 +617,8 @@ impl Document {
         // This is not considered a modification of the contents of the file regardless
         // of the encoding.
         let transaction = helix_core::diff::compare_ropes(self.text(), &rope);
-        self.apply(&transaction, view_id);
-        self.append_changes_to_history(view_id);
+        apply_transaction(&transaction, self, view);
+        self.append_changes_to_history(view.id);
         self.reset_modified();
 
         self.detect_indent_and_line_ending();
@@ -676,9 +684,12 @@ impl Document {
         &mut self,
         language_id: &str,
         config_loader: Arc<syntax::Loader>,
-    ) {
-        let language_config = config_loader.language_config_for_language_id(language_id);
-        self.set_language(language_config, Some(config_loader));
+    ) -> anyhow::Result<()> {
+        let language_config = config_loader
+            .language_config_for_language_id(language_id)
+            .ok_or_else(|| anyhow!("invalid language id: {}", language_id))?;
+        self.set_language(Some(language_config), Some(config_loader));
+        Ok(())
     }
 
     /// Set the LSP.
@@ -778,6 +789,8 @@ impl Document {
                 diagnostic.range.end = changes.map_pos(diagnostic.range.end, Assoc::After);
                 diagnostic.line = self.text.char_to_line(diagnostic.range.start);
             }
+            self.diagnostics
+                .sort_unstable_by_key(|diagnostic| diagnostic.range);
 
             // emit lsp notification
             if let Some(language_server) = self.language_server() {
@@ -797,6 +810,9 @@ impl Document {
     }
 
     /// Apply a [`Transaction`] to the [`Document`] to change its text.
+    /// Instead of calling this function directly, use [crate::apply_transaction]
+    /// to ensure that the transaction is applied to the appropriate [`View`] as
+    /// well.
     pub fn apply(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
         // store the state just before any changes are made. This allows us to undo to the
         // state just before a transaction was applied.
@@ -818,11 +834,11 @@ impl Document {
         success
     }
 
-    fn undo_redo_impl(&mut self, view_id: ViewId, undo: bool) -> bool {
+    fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
         let mut history = self.history.take();
         let txn = if undo { history.undo() } else { history.redo() };
         let success = if let Some(txn) = txn {
-            self.apply_impl(txn, view_id)
+            self.apply_impl(txn, view.id) && view.apply(txn, self)
         } else {
             false
         };
@@ -836,26 +852,26 @@ impl Document {
     }
 
     /// Undo the last modification to the [`Document`]. Returns whether the undo was successful.
-    pub fn undo(&mut self, view_id: ViewId) -> bool {
-        self.undo_redo_impl(view_id, true)
+    pub fn undo(&mut self, view: &mut View) -> bool {
+        self.undo_redo_impl(view, true)
     }
 
     /// Redo the last modification to the [`Document`]. Returns whether the redo was successful.
-    pub fn redo(&mut self, view_id: ViewId) -> bool {
-        self.undo_redo_impl(view_id, false)
+    pub fn redo(&mut self, view: &mut View) -> bool {
+        self.undo_redo_impl(view, false)
     }
 
     pub fn savepoint(&mut self) {
         self.savepoint = Some(Transaction::new(self.text()));
     }
 
-    pub fn restore(&mut self, view_id: ViewId) {
+    pub fn restore(&mut self, view: &mut View) {
         if let Some(revert) = self.savepoint.take() {
-            self.apply(&revert, view_id);
+            apply_transaction(&revert, self, view);
         }
     }
 
-    fn earlier_later_impl(&mut self, view_id: ViewId, uk: UndoKind, earlier: bool) -> bool {
+    fn earlier_later_impl(&mut self, view: &mut View, uk: UndoKind, earlier: bool) -> bool {
         let txns = if earlier {
             self.history.get_mut().earlier(uk)
         } else {
@@ -863,7 +879,7 @@ impl Document {
         };
         let mut success = false;
         for txn in txns {
-            if self.apply_impl(&txn, view_id) {
+            if self.apply_impl(&txn, view.id) && view.apply(&txn, self) {
                 success = true;
             }
         }
@@ -875,13 +891,13 @@ impl Document {
     }
 
     /// Undo modifications to the [`Document`] according to `uk`.
-    pub fn earlier(&mut self, view_id: ViewId, uk: UndoKind) -> bool {
-        self.earlier_later_impl(view_id, uk, true)
+    pub fn earlier(&mut self, view: &mut View, uk: UndoKind) -> bool {
+        self.earlier_later_impl(view, uk, true)
     }
 
     /// Redo modifications to the [`Document`] according to `uk`.
-    pub fn later(&mut self, view_id: ViewId, uk: UndoKind) -> bool {
-        self.earlier_later_impl(view_id, uk, false)
+    pub fn later(&mut self, view: &mut View, uk: UndoKind) -> bool {
+        self.earlier_later_impl(view, uk, false)
     }
 
     /// Commit pending changes to history
@@ -1024,6 +1040,12 @@ impl Document {
         self.path
             .as_deref()
             .map(helix_core::path::get_relative_path)
+    }
+
+    pub fn display_name(&self) -> Cow<'static, str> {
+        self.relative_path()
+            .map(|path| path.to_string_lossy().to_string().into())
+            .unwrap_or_else(|| SCRATCH_BUFFER_NAME.into())
     }
 
     // transact(Fn) ?
