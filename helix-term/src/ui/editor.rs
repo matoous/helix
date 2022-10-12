@@ -157,7 +157,7 @@ impl EditorView {
             &editor.config(),
         );
 
-        if editor.config().lsp.context {
+        if editor.config().sticky_context {
             Self::render_context(editor, doc, view, surface, theme);
         }
 
@@ -429,6 +429,9 @@ impl EditorView {
             let text = doc.text().slice(..);
             let tree = syntax.tree();
             let byte = doc.selection(view.id).primary().cursor(text);
+            let nodes_to_match = doc
+                .language_config()
+                .and_then(|lc| lc.sticky_context_nodes.as_ref());
 
             let mut parent = tree
                 .root_node()
@@ -448,7 +451,10 @@ impl EditorView {
                     }
                 }
 
-                context.push(line);
+                if nodes_to_match.map_or(true, |nodes| nodes.iter().any(|n| n == curr.kind())) {
+                    context.push(line);
+                }
+
                 parent = curr.parent();
             }
 
@@ -460,7 +466,6 @@ impl EditorView {
             let mut context_area = view.inner_area();
             context_area.height = 1;
 
-            let mut last_line = 0;
             for line_num in context {
                 if line_num > view.offset.row {
                     continue;
@@ -480,19 +485,7 @@ impl EditorView {
                 );
 
                 context_area.y += 1;
-                last_line = line_num;
             }
-
-            surface.clear_with(context_area, context_style);
-            let text_style = theme.get("ui.text");
-            let last_line = text.get_line(last_line).unwrap();
-            let padding = last_line.chars().take_while(|&c| c == ' ').count();
-            surface.set_string(
-                context_area.x,
-                context_area.y,
-                format!("{}    context ----", " ".repeat(padding)),
-                text_style,
-            );
         }
     }
 
