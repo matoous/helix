@@ -31,6 +31,12 @@ use tui::buffer::Buffer as Surface;
 use super::lsp::SignatureHelp;
 use super::statusline;
 
+pub struct RenderPackage<'a> {
+    editor: &'a Editor,
+    doc: &'a Document,
+    view: &'a View,
+}
+
 pub struct EditorView {
     pub keymaps: Keymaps,
     on_next_key: Option<Box<dyn FnOnce(&mut commands::Context, KeyEvent)>>,
@@ -157,15 +163,22 @@ impl EditorView {
             &editor.config(),
         );
 
+        let render_package = RenderPackage { editor, doc, view };
+
         let mut context_ln = None;
         if editor.config().sticky_context {
-            context_ln = Self::render_sticky_context(editor, doc, view, surface, theme);
+            context_ln = Self::render_sticky_context(&render_package, surface, theme);
         }
 
         Self::render_gutter(
-            editor, doc, view, view.area, surface, theme, is_focused, context_ln,
+            &render_package,
+            view.area,
+            surface,
+            theme,
+            is_focused,
+            context_ln,
         );
-        Self::render_rulers(editor, doc, view, inner, surface, theme);
+        Self::render_rulers(&render_package, inner, surface, theme);
 
         if is_focused {
             Self::render_focused_view_elements(view, doc, inner, theme, surface);
@@ -197,13 +210,15 @@ impl EditorView {
     }
 
     pub fn render_rulers(
-        editor: &Editor,
-        doc: &Document,
-        view: &View,
+        render_package: &RenderPackage,
         viewport: Rect,
         surface: &mut Surface,
         theme: &Theme,
     ) {
+        let editor = render_package.editor;
+        let doc = render_package.doc;
+        let view = render_package.view;
+
         let editor_rulers = &editor.config().rulers;
         let ruler_theme = theme
             .try_get("ui.virtual.ruler")
@@ -422,12 +437,13 @@ impl EditorView {
     }
 
     pub fn render_sticky_context(
-        editor: &Editor,
-        doc: &Document,
-        view: &View,
+        render_package: &RenderPackage,
         surface: &mut Surface,
         theme: &Theme,
     ) -> Option<Vec<usize>> {
+        let editor = render_package.editor;
+        let doc = render_package.doc;
+        let view = render_package.view;
         if let Some(syntax) = doc.syntax() {
             let tree = syntax.tree();
             let text = doc.text().slice(..);
@@ -801,15 +817,16 @@ impl EditorView {
     }
 
     pub fn render_gutter(
-        editor: &Editor,
-        doc: &Document,
-        view: &View,
+        render_package: &RenderPackage,
         viewport: Rect,
         surface: &mut Surface,
         theme: &Theme,
         is_focused: bool,
         context_ln: Option<Vec<usize>>,
     ) {
+        let editor = render_package.editor;
+        let doc = render_package.doc;
+        let view = render_package.view;
         let text = doc.text().slice(..);
         let last_line = view.last_line(doc);
 
