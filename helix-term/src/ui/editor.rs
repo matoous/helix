@@ -486,10 +486,14 @@ impl EditorView {
             let line_number = match editor.config().line_number {
                 LineNumber::Absolute => line_num,
                 LineNumber::Relative => {
-                    let res = text.byte_to_line(cursor_byte) - line_num;
-                    match res {
-                        n if n < 2 => 1,
-                        _ => res - 1,
+                    if editor.mode() == Mode::Insert {
+                        line_num
+                    } else {
+                        let res = text.byte_to_line(cursor_byte) - line_num;
+                        match res {
+                            n if n < 2 => 1,
+                            _ => res - 1,
+                        }
                     }
                 }
             };
