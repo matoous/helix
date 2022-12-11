@@ -16,6 +16,7 @@ use helix_core::{
     unicode::width::UnicodeWidthStr,
     visual_coords_at_pos, LineEnding, Position, Range, Selection, Transaction,
 };
+use helix_lsp::util::lsp_pos_to_pos;
 use helix_view::{
     apply_transaction,
     document::{Mode, SCRATCH_BUFFER_NAME},
@@ -150,6 +151,7 @@ impl EditorView {
         };
 
         Self::render_text_highlights(doc, view.offset, inner, surface, theme, highlights, &config);
+        Self::render_colors(doc, view, inner, surface);
         Self::render_gutter(editor, doc, view, view.area, surface, theme, is_focused);
         Self::render_rulers(editor, doc, view, inner, surface, theme);
 
@@ -208,6 +210,58 @@ impl EditorView {
             .filter(|ruler| ruler < &viewport.width)
             .map(|ruler| viewport.clip_left(ruler).with_width(1))
             .for_each(|area| surface.set_style(area, ruler_theme))
+    }
+
+    pub fn render_colors(doc: &Document, view: &View, viewport: Rect, surface: &mut Surface) {
+        let colors = doc.colors();
+        if colors.is_empty() {
+            return;
+        }
+        let text = doc.text();
+        let text_slice = text.slice(..);
+        let offset_encoding = match doc.language_server() {
+            Some(ls) => ls.offset_encoding(),
+            None => {
+                return;
+            }
+        };
+        colors
+            .iter()
+            .filter(|color| {
+                color.range.start.line > view.offset.row as u32
+                    && color.range.end.line < (view.offset.row + viewport.height as usize) as u32
+            })
+            .for_each(|color| {
+                let start = view.screen_coords_at_pos(
+                    doc,
+                    text_slice,
+                    lsp_pos_to_pos(text, color.range.start, offset_encoding).unwrap(),
+                );
+                let end = view.screen_coords_at_pos(
+                    doc,
+                    text_slice,
+                    lsp_pos_to_pos(text, color.range.end, offset_encoding).unwrap(),
+                );
+                match (start, end) {
+                    (Some(start), Some(end)) => surface.set_style(
+                        Rect {
+                            x: start.row as u16,
+                            y: start.col as u16,
+                            width: (end.col - start.col + 1) as u16,
+                            height: (end.row - start.row + 1) as u16,
+                        },
+                        Style {
+                            bg: Some(Color::Rgb(
+                                (color.color.red * 255.0) as u8,
+                                (color.color.green * 255.0) as u8,
+                                (color.color.blue * 255.0) as u8,
+                            )),
+                            ..Default::default()
+                        },
+                    ),
+                    (_, _) => {}
+                }
+            });
     }
 
     /// Get syntax highlights for a document in a view represented by the first line
@@ -1099,6 +1153,24 @@ impl EditorView {
             } else {
                 EventResult::Ignored(None)
             };
+        }
+
+        if cx.editor.config().lsp.colors {
+            let doc = doc_mut!(cx.editor);
+            if let Some(request) = doc
+                .language_server()
+                .and_then(|ls| ls.document_colors(doc.identifier()))
+            {
+                cx.callback(
+                    request,
+                    |editor, _compositor, colors: Option<Vec<helix_lsp::lsp::ColorInformation>>| {
+                        if let Some(colors) = colors {
+                            let doc = doc_mut!(editor);
+                            doc.set_colors(colors);
+                        }
+                    },
+                )
+            }
         }
 
         if cx.editor.mode != Mode::Insert || !cx.editor.config().auto_completion {

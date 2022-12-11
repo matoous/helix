@@ -371,6 +371,9 @@ impl Client {
                     publish_diagnostics: Some(lsp::PublishDiagnosticsClientCapabilities {
                         ..Default::default()
                     }),
+                    color_provider: Some(lsp::DocumentColorClientCapabilities {
+                        ..Default::default()
+                    }),
                     ..Default::default()
                 }),
                 window: Some(lsp::WindowClientCapabilities {
@@ -1083,5 +1086,26 @@ impl Client {
         };
 
         Some(self.call::<lsp::request::ExecuteCommand>(params))
+    }
+
+    pub fn document_colors(
+        &self,
+        text_document: lsp::TextDocumentIdentifier,
+    ) -> Option<impl Future<Output = Result<Value>>> {
+        let capabilities = self.capabilities.get().unwrap();
+
+        // Return early if the language server does not support document colors.
+        match capabilities.color_provider {
+            Some(_) => (),
+            _ => return None,
+        };
+
+        Some(
+            self.call::<lsp::request::DocumentColor>(lsp::DocumentColorParams {
+                text_document,
+                work_done_progress_params: lsp::WorkDoneProgressParams::default(),
+                partial_result_params: lsp::PartialResultParams::default(),
+            }),
+        )
     }
 }

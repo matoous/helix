@@ -135,6 +135,7 @@ pub struct Document {
     pub(crate) modified_since_accessed: bool,
 
     diagnostics: Vec<Diagnostic>,
+    colors: Vec<helix_lsp::lsp::ColorInformation>,
     language_server: Option<Arc<helix_lsp::Client>>,
 
     diff_handle: Option<DiffHandle>,
@@ -159,6 +160,7 @@ impl fmt::Debug for Document {
             .field("version", &self.version)
             .field("modified_since_accessed", &self.modified_since_accessed)
             .field("diagnostics", &self.diagnostics)
+            .field("colors", &self.colors)
             // .field("language_server", &self.language_server)
             .finish()
     }
@@ -370,6 +372,7 @@ impl Document {
             changes,
             old_state,
             diagnostics: Vec::new(),
+            colors: Vec::new(),
             version: 0,
             history: Cell::new(History::default()),
             savepoint: None,
@@ -807,6 +810,8 @@ impl Document {
                 diff_handle.update_document(self.text.clone(), false);
             }
 
+            // TODO: clear or map the document colors
+
             // generate revert to savepoint
             if self.savepoint.is_some() {
                 take_with(&mut self.savepoint, |prev_revert| {
@@ -1172,6 +1177,15 @@ impl Document {
         self.diagnostics = diagnostics;
         self.diagnostics
             .sort_unstable_by_key(|diagnostic| diagnostic.range);
+    }
+
+    #[inline]
+    pub fn colors(&self) -> &[helix_lsp::lsp::ColorInformation] {
+        &self.colors
+    }
+
+    pub fn set_colors(&mut self, colors: Vec<helix_lsp::lsp::ColorInformation>) {
+        self.colors = colors;
     }
 
     /// Get the document's auto pairs. If the document has a recognized
