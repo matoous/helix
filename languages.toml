@@ -86,7 +86,7 @@ indent = { tab-width = 2, unit = "  " }
 
 [[grammar]]
 name = "toml"
-source = { git = "https://github.com/ikatyang/tree-sitter-toml", rev = "7cff70bbcbbc62001b465603ca1ea88edd668704" }
+source = { git = "https://github.com/ikatyang/tree-sitter-toml", rev = "8bd2056818b21860e3d756b5a58c4f6e05fb744e" }
 
 [[language]]
 name = "awk"
