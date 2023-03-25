@@ -100,7 +100,7 @@ indent = { tab-width = 2, unit = "  " }
 
 [[grammar]]
 name = "awk"
-source = { git = "https://github.com/Beaglefoot/tree-sitter-awk", rev = "a799bc5da7c2a84bc9a06ba5f3540cf1191e4ee3" }
+source = { git = "https://github.com/Beaglefoot/tree-sitter-awk", rev = "b8e81f62109e65adca1ab51ab9d414411db5a37f" }
 
 [[language]]
 name = "protobuf"
