@@ -113,7 +113,7 @@ indent = { tab-width = 2, unit = "  " }
 
 [[grammar]]
 name = "protobuf"
-source = { git = "https://github.com/yusdacra/tree-sitter-protobuf", rev = "19c211a01434d9f03efff99f85e19f967591b175"}
+source = { git = "https://github.com/yusdacra/tree-sitter-protobuf", rev = "5aef38d655f76a6b0d172340eed3766c93b3124c"}
 
 [[language]]
 name = "elixir"
