@@ -1,0 +1,219 @@
+# Author: Matous Dzivjak <matousdzivjak@gmail.com>
+# Adapted from https://protesilaos.com/emacs/ef-themes, by Protesilaos Stavrou
+# Source: https://github.com/protesilaos/ef-themes/blob/main/ef-dark-theme.el
+# Version 4.3.0
+#
+
+# Syntax highlighting
+# -------------------
+"type" = "cyan-cooler"
+"constructor" = "cyan-cooler"
+
+"constant" = "blue-cooler"
+"constant.character.escape" = "magenta"
+
+"string" = "blue-warmer"
+"string.regexp" = "magenta-faint"
+"string.special" = "blue-faint" # used for colors in CSS
+
+"comment" = "fg-dim"
+
+"variable.parameter" = "cyan"
+"variable.builtin" = "magenta-cooler"
+"label" = "fg-dim" # used for language in markdown code blocks
+"keyword" = "magenta-cooler"
+"keyword.directive" = "red-cooler"
+"function" = "magenta"
+"function.macro" = "magenta-warmer"
+
+punctuation = "fg-dim"
+"tag" = "magenta"
+"attribute" = "cyan-cooler"
+"namespace" = "blue-cooler"
+"special" = "red-cooler"
+
+"markup.heading.marker" = "fg-dim"
+"markup.heading.1" = { fg = "fg-main", modifiers = ["bold"] }
+"markup.heading.2" = { fg = "yellow-faint", modifiers = ["bold"] }
+"markup.heading.3" = { fg = "fg-alt", modifiers = ["bold"] }
+"markup.heading.4" = { fg = "magenta", modifiers = ["bold"] }
+"markup.heading.5" = { fg = "green-faint", modifiers = ["bold"] }
+"markup.heading.6" = { fg = "red-faint", modifiers = ["bold"] }
+"markup.list" = "fg-dim"
+"markup.list.checked" = { fg = "yellow-warmer" }
+"markup.list.unchecked" = { fg = "yellow-warmer" }
+"markup.bold" = { modifiers = ["bold"] }
+"markup.italic" = { modifiers = ["italic"] }
+"markup.strikethrough" = { modifiers = ["crossed_out"] }
+"markup.link.url" = { fg = "cyan" }
+"markup.link.text" = { fg = "blue-warmer", modifiers = ["underlined"] }
+"markup.raw.block" = { bg = "bg-dim" }
+"markup.raw.inline" = { fg = "green-cooler" }
+
+"diff.plus" = { fg = "fg-added", bg = "bg-added" }
+"diff.plus.gutter" = "green-intense"
+"diff.minus" = { fg = "fg-removed", bg = "bg-removed" }
+"diff.minus.gutter" = "red-intense"
+"diff.delta" = { fg = "fg-changed", bg = "bg-changed" }
+"diff.delta.gutter" = "yellow-intense"
+
+# User Interface
+# --------------
+
+"ui.background" = { bg = "bg-main" }
+
+"ui.linenr" = { fg = "fg-dim", bg = "bg-dim" }
+"ui.linenr.selected" = { fg = "fg-main", bg = "bg-active" }
+
+"ui.statusline" = { fg = "fg-mode-line-active", bg = "bg-mode-line-active" }
+"ui.statusline.inactive" = { fg = "fg-mode-line-inactive", bg = "bg-mode-line-inactive" }
+"ui.statusline.normal" = { fg = "blue-warmer" }
+"ui.statusline.insert" = { fg = "green-warmer" }
+"ui.statusline.select" = { fg = "magenta-warmer" }
+
+"ui.popup" = { fg = "fg-main", bg = "bg-dim" }
+"ui.window" = { fg = "fg-dim" }
+"ui.help" = { fg = "fg-main", bg = "bg-dim" }
+"ui.gutter" = { bg = "bg-dim" }
+"ui.text" = "fg-main"
+"ui.text.focus" = { fg = "fg-main", bg = "bg-completion", modifiers = ["bold"] }
+"ui.text.inactive" = { fg = "fg-dim" }
+"ui.virtual" = "bg-active"
+"ui.virtual.ruler" = { bg = "bg-dim" }
+"ui.virtual.inlay-hint" = { fg = "fg-dim", modifiers = ["italic"] }
+
+"ui.selection" = { fg = "fg-main", bg = "bg-inactive" }
+"ui.selection.primary" = { fg = "fg-main", bg = "bg-active" }
+
+"ui.cursor" = { fg = "bg-main", bg = "fg-main" }
+"ui.cursor.primary" = { fg = "bg-main", bg = "fg-dim" }
+"ui.cursor.match" = { bg = "bg-paren-match" }
+"ui.cursorline.primary" = { bg = "bg-hl-line" }
+
+"ui.highlight" = { bg = "bg-hl-line" }
+
+"ui.menu" = { fg = "fg-main", bg = "bg-dim" }
+"ui.menu.selected" = { fg = "fg-main", bg = "bg-completion", modifiers = ["bold"] }
+"ui.menu.scroll" = { fg = "fg-dim", bg = "bg-cyan-intense" }
+
+"diagnostic.error" = { underline = { color = "red-intense", style = "curl" } }
+"diagnostic.warning" = { underline = { color = "yellow-intense", style = "curl" } }
+"diagnostic.info" = { underline = { color = "cyan-intense", style = "curl" } }
+"diagnostic.hint" = { underline = { color = "blue-intense", style = "curl" } }
+
+error = "red"
+warning = "yellow-warmer"
+info = "cyan-cooler"
+hint = "blue-cooler"
+
+[palette]
+# Basic values
+bg-main = "#000000"
+fg-main = "#d0d0d0"
+bg-dim = "#1a1a1a"
+fg-dim = "#857f8f"
+bg-alt = "#2b2b2b"
+fg-alt = "#89afef"
+
+bg-active = "#4b4b4b"
+bg-inactive = "#121212"
+
+# Basic hues for foreground values
+red = "#ef6560"
+red-warmer = "#f47360"
+red-cooler = "#ff5a7a"
+red-faint = "#d56f72"
+green = "#0faa26"
+green-warmer = "#6aad0f"
+green-cooler = "#00a692"
+green-faint = "#61a06c"
+yellow = "#bf9032"
+yellow-warmer = "#d1843f"
+yellow-cooler = "#df8a5a"
+yellow-faint = "#cf9f8f"
+blue = "#3f95f6"
+blue-warmer = "#6a9fff"
+blue-cooler = "#029fff"
+blue-faint = "#7a94df"
+magenta = "#d369af"
+magenta-warmer = "#e580ea"
+magenta-cooler = "#af85ff"
+magenta-faint = "#c58faf"
+cyan = "#4fbaef"
+cyan-warmer = "#6fafff"
+cyan-cooler = "#1dbfcf"
+cyan-faint = "#8aa0df"
+
+# Basic hues for background values
+bg-red-intense = "#cd2f30"
+bg-green-intense = "#20a020"
+bg-yellow-intense = "#8f5040"
+bg-blue-intense = "#4648d0"
+bg-magenta-intense = "#a050cf"
+bg-cyan-intense = "#2270be"
+
+bg-red-subtle = "#72002a"
+bg-green-subtle = "#00422a"
+bg-yellow-subtle = "#603000"
+bg-blue-subtle = "#242679"
+bg-magenta-subtle = "#5a105f"
+bg-cyan-subtle = "#004065"
+
+# Diffs
+bg-added = "#00381f"
+bg-added-faint = "#002910"
+bg-added-refine = "#034f2f"
+fg-added = "#a0e0a0"
+
+bg-changed = "#363300"
+bg-changed-faint = "#2a1f00"
+bg-changed-refine = "#4a4a00"
+fg-changed = "#efef80"
+
+bg-removed = "#4f1119"
+bg-removed-faint = "#380a0f"
+bg-removed-refine = "#781a1f"
+fg-removed = "#ffbfbf"
+
+# Graphs
+bg-graph-red-0 = "#b52c2c"
+bg-graph-red-1 = "#702020"
+bg-graph-green-0 = "#0fed00"
+bg-graph-green-1 = "#007800"
+bg-graph-yellow-0 = "#f1e00a"
+bg-graph-yellow-1 = "#b08940"
+bg-graph-blue-0 = "#2fafef"
+bg-graph-blue-1 = "#1f2f8f"
+bg-graph-magenta-0 = "#bf94fe"
+bg-graph-magenta-1 = "#5f509f"
+bg-graph-cyan-0 = "#47dfea"
+bg-graph-cyan-1 = "#00808f"
+
+# Special hues
+bg-mode-line = "#2a2a75"
+fg-mode-line = "#e0e0ff"
+bg-completion = "#0f2d4a"
+bg-hover = "#004a5f"
+bg-hover-secondary = "#551f5a"
+bg-hl-line = "#002435"
+bg-paren = "#20577a"
+bg-paren-match = "#20577a"
+bg-err = "#360d09"
+bg-warning = "#332600"
+bg-info = "#002c12"
+
+border = "#4f4f5f"
+cursor = "#ff76ff"
+fg-intense = "#ffffff"
+
+modeline-err = "#ff80af"
+modeline-warning = "#dfcf33"
+modeline-info = "#2fc82f"
+
+underline-err = "#df2f2f"
+underline-warning = "#c0b000"
+underline-info = "#22b022"
+
+bg-char-0 = "#0050af"
+bg-char-1 = "#7f1f7f"
+bg-char-2 = "#625a00"
