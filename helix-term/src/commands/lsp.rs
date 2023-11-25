@@ -1479,17 +1479,7 @@ pub fn code_lens_under_cursor(cx: &mut Context) {
                 // TODO: fix the check
                 cl.range.start.line == pos.line
             })
-            .map(|cl| {
-                // if cl.command.is_none() {
-                //     if let Some(req) = language_server.code_lens_resolve(cl.clone()) {
-                //         if let Some(code_lens) = block_on(req).ok().unwrap() {
-                //             log::info!("code_lense: resolved {:?} into {:?}", cl, code_lens);
-                //             return map_code_lens(doc, &code_lens);
-                //         }
-                //     }
-                // }
-                map_code_lens(doc_text, cl, offset_encoding, language_server.id())
-            })
+            .map(|cl| map_code_lens(doc_text, cl, offset_encoding, language_server.id()))
             .collect();
 
         if lenses.is_empty() {
@@ -1535,7 +1525,9 @@ pub fn code_lens_under_cursor(cx: &mut Context) {
     };
 }
 
-pub fn code_lenses_picker(cx: &mut Context) {
+// TODO: should be run the same way as diagnostic - shouldn't require manual
+// trigger to set lenses.
+pub fn request_code_lenses(cx: &mut Context) {
     let doc = doc!(cx.editor);
 
     let language_server =
@@ -1558,6 +1550,8 @@ pub fn code_lenses_picker(cx: &mut Context) {
         request,
         move |editor, compositor, lenses: Option<Vec<lsp::CodeLens>>| {
             if let Some(lenses) = lenses {
+                log::error!("lenses got: {:?}", lenses);
+
                 let doc = doc_mut!(editor, &doc_id);
                 let doc_text = doc.text();
                 if let Some(uri) = doc.uri() {
@@ -1568,7 +1562,7 @@ pub fn code_lenses_picker(cx: &mut Context) {
                     .iter()
                     .map(|l| map_code_lens(doc_text, l, offset_enc, language_server_id))
                     .collect();
-                log::error!("lenses got: {:?}", lenses);
+
                 doc.set_code_lens(lenses.clone());
 
                 let columns = [

@@ -493,6 +493,8 @@ impl View {
             ));
         }
 
+        // TODO: lens line annotation
+
         text_annotations
     }
 
