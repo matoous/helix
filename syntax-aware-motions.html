@@ -3,8 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Page not found</title>
-        <base href="/">
+        <title>Syntax aware motions</title>
 
 
         <!-- Custom HTML head -->
@@ -90,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="title-page.html">Helix</a></li><li class="chapter-item expanded "><a href="install.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">2.</strong> Usage</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="keymap.html"><strong aria-hidden="true">2.1.</strong> Keymap</a></li><li class="chapter-item expanded "><a href="commands.html"><strong aria-hidden="true">2.2.</strong> Commands</a></li><li class="chapter-item expanded "><a href="lang-support.html"><strong aria-hidden="true">2.3.</strong> Language support</a></li></ol></li><li class="chapter-item expanded "><a href="from-vim.html"><strong aria-hidden="true">3.</strong> Migrating from Vim</a></li><li class="chapter-item expanded "><a href="configuration.html"><strong aria-hidden="true">4.</strong> Configuration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="themes.html"><strong aria-hidden="true">4.1.</strong> Themes</a></li><li class="chapter-item expanded "><a href="remapping.html"><strong aria-hidden="true">4.2.</strong> Key remapping</a></li><li class="chapter-item expanded "><a href="languages.html"><strong aria-hidden="true">4.3.</strong> Languages</a></li></ol></li><li class="chapter-item expanded "><a href="guides/index.html"><strong aria-hidden="true">5.</strong> Guides</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="guides/adding_languages.html"><strong aria-hidden="true">5.1.</strong> Adding languages</a></li><li class="chapter-item expanded "><a href="guides/textobject.html"><strong aria-hidden="true">5.2.</strong> Adding textobject queries</a></li><li class="chapter-item expanded "><a href="guides/indent.html"><strong aria-hidden="true">5.3.</strong> Adding indent queries</a></li><li class="chapter-item expanded "><a href="guides/injection.html"><strong aria-hidden="true">5.4.</strong> Adding injection queries</a></li></ol></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="title-page.html">Helix</a></li><li class="chapter-item expanded "><a href="install.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="package-managers.html"><strong aria-hidden="true">1.1.</strong> Package Managers</a></li><li class="chapter-item expanded "><a href="building-from-source.html"><strong aria-hidden="true">1.2.</strong> Building from source</a></li></ol></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">2.</strong> Usage</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="registers.html"><strong aria-hidden="true">2.1.</strong> Registers</a></li><li class="chapter-item expanded "><a href="surround.html"><strong aria-hidden="true">2.2.</strong> Surround</a></li><li class="chapter-item expanded "><a href="textobjects.html"><strong aria-hidden="true">2.3.</strong> Textobjects</a></li><li class="chapter-item expanded "><a href="syntax-aware-motions.html" class="active"><strong aria-hidden="true">2.4.</strong> Syntax aware motions</a></li><li class="chapter-item expanded "><a href="keymap.html"><strong aria-hidden="true">2.5.</strong> Keymap</a></li><li class="chapter-item expanded "><a href="commands.html"><strong aria-hidden="true">2.6.</strong> Commands</a></li><li class="chapter-item expanded "><a href="lang-support.html"><strong aria-hidden="true">2.7.</strong> Language support</a></li></ol></li><li class="chapter-item expanded "><a href="from-vim.html"><strong aria-hidden="true">3.</strong> Migrating from Vim</a></li><li class="chapter-item expanded "><a href="configuration.html"><strong aria-hidden="true">4.</strong> Configuration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="editor.html"><strong aria-hidden="true">4.1.</strong> Editor</a></li><li class="chapter-item expanded "><a href="themes.html"><strong aria-hidden="true">4.2.</strong> Themes</a></li><li class="chapter-item expanded "><a href="remapping.html"><strong aria-hidden="true">4.3.</strong> Key remapping</a></li><li class="chapter-item expanded "><a href="languages.html"><strong aria-hidden="true">4.4.</strong> Languages</a></li></ol></li><li class="chapter-item expanded "><a href="guides/index.html"><strong aria-hidden="true">5.</strong> Guides</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="guides/adding_languages.html"><strong aria-hidden="true">5.1.</strong> Adding languages</a></li><li class="chapter-item expanded "><a href="guides/textobject.html"><strong aria-hidden="true">5.2.</strong> Adding textobject queries</a></li><li class="chapter-item expanded "><a href="guides/indent.html"><strong aria-hidden="true">5.3.</strong> Adding indent queries</a></li><li class="chapter-item expanded "><a href="guides/injection.html"><strong aria-hidden="true">5.4.</strong> Adding injection queries</a></li></ol></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -151,6 +150,9 @@
                         <a href="https://github.com/helix-editor/helix" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
+                        <a href="https://github.com/helix-editor/helix/edit/master/book/src/syntax-aware-motions.md" title="Suggest an edit" aria-label="Suggest an edit">
+                            <i id="git-edit-button" class="fa fa-edit"></i>
+                        </a>
 
                     </div>
                 </div>
@@ -177,14 +179,66 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="document-not-found-404"><a class="header" href="#document-not-found-404">Document not found (404)</a></h1>
-<p>This URL is invalid, sorry. Please use the navigation bar or search to continue.</p>
+                        <h2 id="moving-the-selection-with-syntax-aware-motions"><a class="header" href="#moving-the-selection-with-syntax-aware-motions">Moving the selection with syntax-aware motions</a></h2>
+<p><code>Alt-p</code>, <code>Alt-o</code>, <code>Alt-i</code>, and <code>Alt-n</code> (or <code>Alt</code> and arrow keys) allow you to move the
+selection according to its location in the syntax tree. For example, many languages have the
+following syntax for function calls:</p>
+<pre><code class="language-js">func(arg1, arg2, arg3);
+</code></pre>
+<p>A function call might be parsed by tree-sitter into a tree like the following.</p>
+<pre><code class="language-tsq">(call
+  function: (identifier) ; func
+  arguments:
+    (arguments           ; (arg1, arg2, arg3)
+      (identifier)       ; arg1
+      (identifier)       ; arg2
+      (identifier)))     ; arg3
+</code></pre>
+<p>Use <code>:tree-sitter-subtree</code> to view the syntax tree of the primary selection. In
+a more intuitive tree format:</p>
+<pre><code>            ┌────┐
+            │call│
+      ┌─────┴────┴─────┐
+      │                │
+┌─────▼────┐      ┌────▼────┐
+│identifier│      │arguments│
+│  "func"  │ ┌────┴───┬─────┴───┐
+└──────────┘ │        │         │
+             │        │         │
+   ┌─────────▼┐  ┌────▼─────┐  ┌▼─────────┐
+   │identifier│  │identifier│  │identifier│
+   │  "arg1"  │  │  "arg2"  │  │  "arg3"  │
+   └──────────┘  └──────────┘  └──────────┘
+</code></pre>
+<p>If you have a selection that wraps <code>arg1</code> (see the tree above), and you use
+<code>Alt-n</code>, it will select the next sibling in the syntax tree: <code>arg2</code>.</p>
+<pre><code class="language-js">// before
+func([arg1], arg2, arg3)
+// after
+func(arg1, [arg2], arg3);
+</code></pre>
+<p>Similarly, <code>Alt-o</code> will expand the selection to the parent node, in this case, the
+arguments node.</p>
+<pre><code class="language-js">func[(arg1, arg2, arg3)];
+</code></pre>
+<p>There is also some nuanced behavior that prevents you from getting stuck on a
+node with no sibling. When using <code>Alt-p</code> with a selection on <code>arg1</code>, the previous
+child node will be selected. In the event that <code>arg1</code> does not have a previous
+sibling, the selection will move up the syntax tree and select the previous
+element. As a result, using <code>Alt-p</code> with a selection on <code>arg1</code> will move the
+selection to the "func" <code>identifier</code>.</p>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
+                            <a rel="prev" href="textobjects.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                                <i class="fa fa-angle-left"></i>
+                            </a>
 
+                            <a rel="next prefetch" href="keymap.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                                <i class="fa fa-angle-right"></i>
+                            </a>
 
                         <div style="clear: both"></div>
                     </nav>
@@ -192,7 +246,13 @@
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
+                    <a rel="prev" href="textobjects.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                        <i class="fa fa-angle-left"></i>
+                    </a>
 
+                    <a rel="next prefetch" href="keymap.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                        <i class="fa fa-angle-right"></i>
+                    </a>
             </nav>
 
         </div>

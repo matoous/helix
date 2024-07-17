@@ -3,7 +3,7 @@
     <head>
         <!-- Book generated using mdBook -->
         <meta charset="UTF-8">
-        <title>Adding textobject queries</title>
+        <title>Textobjects</title>
 
 
         <!-- Custom HTML head -->
@@ -12,31 +12,31 @@
         <meta name="viewport" content="width=device-width, initial-scale=1">
         <meta name="theme-color" content="#ffffff">
 
-        <link rel="icon" href="../favicon.svg">
-        <link rel="shortcut icon" href="../favicon.png">
-        <link rel="stylesheet" href="../css/variables.css">
-        <link rel="stylesheet" href="../css/general.css">
-        <link rel="stylesheet" href="../css/chrome.css">
-        <link rel="stylesheet" href="../css/print.css" media="print">
+        <link rel="icon" href="favicon.svg">
+        <link rel="shortcut icon" href="favicon.png">
+        <link rel="stylesheet" href="css/variables.css">
+        <link rel="stylesheet" href="css/general.css">
+        <link rel="stylesheet" href="css/chrome.css">
+        <link rel="stylesheet" href="css/print.css" media="print">
 
         <!-- Fonts -->
-        <link rel="stylesheet" href="../FontAwesome/css/font-awesome.css">
-        <link rel="stylesheet" href="../fonts/fonts.css">
+        <link rel="stylesheet" href="FontAwesome/css/font-awesome.css">
+        <link rel="stylesheet" href="fonts/fonts.css">
 
         <!-- Highlight.js Stylesheets -->
-        <link rel="stylesheet" href="../highlight.css">
-        <link rel="stylesheet" href="../tomorrow-night.css">
-        <link rel="stylesheet" href="../ayu-highlight.css">
+        <link rel="stylesheet" href="highlight.css">
+        <link rel="stylesheet" href="tomorrow-night.css">
+        <link rel="stylesheet" href="ayu-highlight.css">
 
         <!-- Custom theme stylesheets -->
-        <link rel="stylesheet" href="../custom.css">
+        <link rel="stylesheet" href="custom.css">
 
     </head>
     <body class="sidebar-visible no-js">
     <div id="body-container">
         <!-- Provide site root to javascript -->
         <script>
-            var path_to_root = "../";
+            var path_to_root = "";
             var default_theme = window.matchMedia("(prefers-color-scheme: dark)").matches ? "colibri" : "colibri";
         </script>
 
@@ -89,7 +89,7 @@
 
         <nav id="sidebar" class="sidebar" aria-label="Table of contents">
             <div class="sidebar-scrollbox">
-                <ol class="chapter"><li class="chapter-item expanded affix "><a href="../title-page.html">Helix</a></li><li class="chapter-item expanded "><a href="../install.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li class="chapter-item expanded "><a href="../usage.html"><strong aria-hidden="true">2.</strong> Usage</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../keymap.html"><strong aria-hidden="true">2.1.</strong> Keymap</a></li><li class="chapter-item expanded "><a href="../commands.html"><strong aria-hidden="true">2.2.</strong> Commands</a></li><li class="chapter-item expanded "><a href="../lang-support.html"><strong aria-hidden="true">2.3.</strong> Language support</a></li></ol></li><li class="chapter-item expanded "><a href="../from-vim.html"><strong aria-hidden="true">3.</strong> Migrating from Vim</a></li><li class="chapter-item expanded "><a href="../configuration.html"><strong aria-hidden="true">4.</strong> Configuration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../themes.html"><strong aria-hidden="true">4.1.</strong> Themes</a></li><li class="chapter-item expanded "><a href="../remapping.html"><strong aria-hidden="true">4.2.</strong> Key remapping</a></li><li class="chapter-item expanded "><a href="../languages.html"><strong aria-hidden="true">4.3.</strong> Languages</a></li></ol></li><li class="chapter-item expanded "><a href="../guides/index.html"><strong aria-hidden="true">5.</strong> Guides</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="../guides/adding_languages.html"><strong aria-hidden="true">5.1.</strong> Adding languages</a></li><li class="chapter-item expanded "><a href="../guides/textobject.html" class="active"><strong aria-hidden="true">5.2.</strong> Adding textobject queries</a></li><li class="chapter-item expanded "><a href="../guides/indent.html"><strong aria-hidden="true">5.3.</strong> Adding indent queries</a></li><li class="chapter-item expanded "><a href="../guides/injection.html"><strong aria-hidden="true">5.4.</strong> Adding injection queries</a></li></ol></li></ol>
+                <ol class="chapter"><li class="chapter-item expanded affix "><a href="title-page.html">Helix</a></li><li class="chapter-item expanded "><a href="install.html"><strong aria-hidden="true">1.</strong> Installation</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="package-managers.html"><strong aria-hidden="true">1.1.</strong> Package Managers</a></li><li class="chapter-item expanded "><a href="building-from-source.html"><strong aria-hidden="true">1.2.</strong> Building from source</a></li></ol></li><li class="chapter-item expanded "><a href="usage.html"><strong aria-hidden="true">2.</strong> Usage</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="registers.html"><strong aria-hidden="true">2.1.</strong> Registers</a></li><li class="chapter-item expanded "><a href="surround.html"><strong aria-hidden="true">2.2.</strong> Surround</a></li><li class="chapter-item expanded "><a href="textobjects.html" class="active"><strong aria-hidden="true">2.3.</strong> Textobjects</a></li><li class="chapter-item expanded "><a href="syntax-aware-motions.html"><strong aria-hidden="true">2.4.</strong> Syntax aware motions</a></li><li class="chapter-item expanded "><a href="keymap.html"><strong aria-hidden="true">2.5.</strong> Keymap</a></li><li class="chapter-item expanded "><a href="commands.html"><strong aria-hidden="true">2.6.</strong> Commands</a></li><li class="chapter-item expanded "><a href="lang-support.html"><strong aria-hidden="true">2.7.</strong> Language support</a></li></ol></li><li class="chapter-item expanded "><a href="from-vim.html"><strong aria-hidden="true">3.</strong> Migrating from Vim</a></li><li class="chapter-item expanded "><a href="configuration.html"><strong aria-hidden="true">4.</strong> Configuration</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="editor.html"><strong aria-hidden="true">4.1.</strong> Editor</a></li><li class="chapter-item expanded "><a href="themes.html"><strong aria-hidden="true">4.2.</strong> Themes</a></li><li class="chapter-item expanded "><a href="remapping.html"><strong aria-hidden="true">4.3.</strong> Key remapping</a></li><li class="chapter-item expanded "><a href="languages.html"><strong aria-hidden="true">4.4.</strong> Languages</a></li></ol></li><li class="chapter-item expanded "><a href="guides/index.html"><strong aria-hidden="true">5.</strong> Guides</a></li><li><ol class="section"><li class="chapter-item expanded "><a href="guides/adding_languages.html"><strong aria-hidden="true">5.1.</strong> Adding languages</a></li><li class="chapter-item expanded "><a href="guides/textobject.html"><strong aria-hidden="true">5.2.</strong> Adding textobject queries</a></li><li class="chapter-item expanded "><a href="guides/indent.html"><strong aria-hidden="true">5.3.</strong> Adding indent queries</a></li><li class="chapter-item expanded "><a href="guides/injection.html"><strong aria-hidden="true">5.4.</strong> Adding injection queries</a></li></ol></li></ol>
             </div>
             <div id="sidebar-resize-handle" class="sidebar-resize-handle"></div>
         </nav>
@@ -144,13 +144,13 @@
                     <h1 class="menu-title"></h1>
 
                     <div class="right-buttons">
-                        <a href="../print.html" title="Print this book" aria-label="Print this book">
+                        <a href="print.html" title="Print this book" aria-label="Print this book">
                             <i id="print-button" class="fa fa-print"></i>
                         </a>
                         <a href="https://github.com/helix-editor/helix" title="Git repository" aria-label="Git repository">
                             <i id="git-repository-button" class="fa fa-github"></i>
                         </a>
-                        <a href="https://github.com/helix-editor/helix/edit/master/book/src/guides/textobject.md" title="Suggest an edit" aria-label="Suggest an edit">
+                        <a href="https://github.com/helix-editor/helix/edit/master/book/src/textobjects.md" title="Suggest an edit" aria-label="Suggest an edit">
                             <i id="git-edit-button" class="fa fa-edit"></i>
                         </a>
 
@@ -179,53 +179,59 @@
 
                 <div id="content" class="content">
                     <main>
-                        <h1 id="adding-textobject-queries"><a class="header" href="#adding-textobject-queries">Adding textobject queries</a></h1>
-<p>Helix supports textobjects that are language specific, such as functions, classes, etc.
-These textobjects require an accompanying tree-sitter grammar and a <code>textobjects.scm</code> query file
-to work properly. Tree-sitter allows us to query the source code syntax tree
-and capture specific parts of it. The queries are written in a lisp dialect.
-More information on how to write queries can be found in the <a href="https://tree-sitter.github.io/tree-sitter/using-parsers#query-syntax">official tree-sitter
-documentation</a>.</p>
-<p>Query files should be placed in <code>runtime/queries/{language}/textobjects.scm</code>
-when contributing to Helix. Note that to test the query files locally you should put
-them under your local runtime directory (<code>~/.config/helix/runtime</code> on Linux
-for example).</p>
-<p>The following <a href="https://tree-sitter.github.io/tree-sitter/using-parsers#capturing-nodes">captures</a> are recognized:</p>
-<div class="table-wrapper"><table><thead><tr><th>Capture Name</th></tr></thead><tbody>
-<tr><td><code>function.inside</code></td></tr>
-<tr><td><code>function.around</code></td></tr>
-<tr><td><code>class.inside</code></td></tr>
-<tr><td><code>class.around</code></td></tr>
-<tr><td><code>test.inside</code></td></tr>
-<tr><td><code>test.around</code></td></tr>
-<tr><td><code>parameter.inside</code></td></tr>
-<tr><td><code>comment.inside</code></td></tr>
-<tr><td><code>comment.around</code></td></tr>
+                        <h2 id="selecting-and-manipulating-text-with-textobjects"><a class="header" href="#selecting-and-manipulating-text-with-textobjects">Selecting and manipulating text with textobjects</a></h2>
+<p>In Helix, textobjects are a way to select, manipulate and operate on a piece of
+text in a structured way. They allow you to refer to blocks of text based on
+their structure or purpose, such as a word, sentence, paragraph, or even a
+function or block of code.</p>
+<p><img src="https://user-images.githubusercontent.com/23398472/124231131-81a4bb00-db2d-11eb-9d10-8e577ca7b177.gif" alt="Textobject demo" />
+<img src="https://user-images.githubusercontent.com/23398472/132537398-2a2e0a54-582b-44ab-a77f-eb818942203d.gif" alt="Textobject tree-sitter demo" /></p>
+<ul>
+<li><code>ma</code> - Select around the object (<code>va</code> in Vim, <code>&lt;alt-a&gt;</code> in Kakoune)</li>
+<li><code>mi</code> - Select inside the object (<code>vi</code> in Vim, <code>&lt;alt-i&gt;</code> in Kakoune)</li>
+</ul>
+<div class="table-wrapper"><table><thead><tr><th>Key after <code>mi</code> or <code>ma</code></th><th>Textobject selected</th></tr></thead><tbody>
+<tr><td><code>w</code></td><td>Word</td></tr>
+<tr><td><code>W</code></td><td>WORD</td></tr>
+<tr><td><code>p</code></td><td>Paragraph</td></tr>
+<tr><td><code>(</code>, <code>[</code>, <code>'</code>, etc.</td><td>Specified surround pairs</td></tr>
+<tr><td><code>m</code></td><td>The closest surround pair</td></tr>
+<tr><td><code>f</code></td><td>Function</td></tr>
+<tr><td><code>t</code></td><td>Type (or Class)</td></tr>
+<tr><td><code>a</code></td><td>Argument/parameter</td></tr>
+<tr><td><code>c</code></td><td>Comment</td></tr>
+<tr><td><code>T</code></td><td>Test</td></tr>
+<tr><td><code>g</code></td><td>Change</td></tr>
 </tbody></table>
 </div>
-<p><a href="https://github.com/search?q=repo%3Ahelix-editor%2Fhelix+path%3A%2A%2A/textobjects.scm&amp;type=Code&amp;ref=advsearch&amp;l=&amp;l=">Example query files</a> can be found in the helix GitHub repository.</p>
-<h2 id="queries-for-textobject-based-navigation"><a class="header" href="#queries-for-textobject-based-navigation">Queries for textobject based navigation</a></h2>
-<p>Tree-sitter based navigation in Helix is done using captures in the
-following order:</p>
-<ul>
-<li><code>object.movement</code></li>
-<li><code>object.around</code></li>
-<li><code>object.inside</code></li>
-</ul>
-<p>For example if a <code>function.around</code> capture has been already defined for a language
-in its <code>textobjects.scm</code> file, function navigation should also work automatically.
-<code>function.movement</code> should be defined only if the node captured by <code>function.around</code>
-doesn't make sense in a navigation context.</p>
+<blockquote>
+<p>💡 <code>f</code>, <code>t</code>, etc. need a tree-sitter grammar active for the current
+document and a special tree-sitter query file to work properly. <a href="./lang-support.html">Only
+some grammars</a> currently have the query file implemented.
+Contributions are welcome!</p>
+</blockquote>
+<h2 id="navigating-using-tree-sitter-textobjects"><a class="header" href="#navigating-using-tree-sitter-textobjects">Navigating using tree-sitter textobjects</a></h2>
+<p>Navigating between functions, classes, parameters, and other elements is
+possible using tree-sitter and textobject queries. For
+example to move to the next function use <code>]f</code>, to move to previous
+type use <code>[t</code>, and so on.</p>
+<p><img src="https://user-images.githubusercontent.com/23398472/152332550-7dfff043-36a2-4aec-b8f2-77c13eb56d6f.gif" alt="Tree-sitter-nav-demo" /></p>
+<p>For the full reference see the <a href="./keymap.html#unimpaired">unimpaired</a> section of the key bind
+documentation.</p>
+<blockquote>
+<p>💡 This feature relies on tree-sitter textobjects
+and requires the corresponding query file to work properly.</p>
+</blockquote>
 
                     </main>
 
                     <nav class="nav-wrapper" aria-label="Page navigation">
                         <!-- Mobile navigation buttons -->
-                            <a rel="prev" href="../guides/adding_languages.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                            <a rel="prev" href="surround.html" class="mobile-nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                                 <i class="fa fa-angle-left"></i>
                             </a>
 
-                            <a rel="next prefetch" href="../guides/indent.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                            <a rel="next prefetch" href="syntax-aware-motions.html" class="mobile-nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                                 <i class="fa fa-angle-right"></i>
                             </a>
 
@@ -235,11 +241,11 @@ doesn't make sense in a navigation context.</p>
             </div>
 
             <nav class="nav-wide-wrapper" aria-label="Page navigation">
-                    <a rel="prev" href="../guides/adding_languages.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
+                    <a rel="prev" href="surround.html" class="nav-chapters previous" title="Previous chapter" aria-label="Previous chapter" aria-keyshortcuts="Left">
                         <i class="fa fa-angle-left"></i>
                     </a>
 
-                    <a rel="next prefetch" href="../guides/indent.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
+                    <a rel="next prefetch" href="syntax-aware-motions.html" class="nav-chapters next" title="Next chapter" aria-label="Next chapter" aria-keyshortcuts="Right">
                         <i class="fa fa-angle-right"></i>
                     </a>
             </nav>
@@ -254,13 +260,13 @@ doesn't make sense in a navigation context.</p>
         </script>
 
 
-        <script src="../elasticlunr.min.js"></script>
-        <script src="../mark.min.js"></script>
-        <script src="../searcher.js"></script>
+        <script src="elasticlunr.min.js"></script>
+        <script src="mark.min.js"></script>
+        <script src="searcher.js"></script>
 
-        <script src="../clipboard.min.js"></script>
-        <script src="../highlight.js"></script>
-        <script src="../book.js"></script>
+        <script src="clipboard.min.js"></script>
+        <script src="highlight.js"></script>
+        <script src="book.js"></script>
 
         <!-- Custom JS scripts -->
 
