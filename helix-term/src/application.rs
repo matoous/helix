@@ -1181,8 +1181,8 @@ impl Application {
                             .editor
                             .documents
                             .values()
-                            .filter(|x| x.supports_language_server(language_server))
-                            .map(|x| x.id())
+                            .filter(|doc| doc.supports_language_server(language_server))
+                            .map(|doc| doc.id())
                             .collect();
 
                         for document in documents {
