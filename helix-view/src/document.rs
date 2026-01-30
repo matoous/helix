@@ -213,6 +213,7 @@ pub struct Document {
     pub focused_at: std::time::Instant,
 
     pub readonly: bool,
+    custom_display_name: Option<String>,
 
     pub previous_diagnostic_ids: HashMap<LanguageServerId, String>,
 
@@ -764,6 +765,7 @@ impl Document {
             version_control_head: None,
             focused_at: std::time::Instant::now(),
             readonly: false,
+            custom_display_name: None,
             jump_labels: HashMap::new(),
             document_highlights: HashMap::new(),
             code_action_hints: HashSet::new(),
@@ -1480,9 +1482,13 @@ impl Document {
         self.modified_since_accessed = true;
         self.version += 1;
 
+        let old_len = old_doc.len_chars();
         for selection in self.selections.values_mut() {
-            *selection = selection
+            let clamped = selection
                 .clone()
+                .transform(|range| Range::new(range.anchor.min(old_len), range.head.min(old_len)))
+                .ensure_invariants(old_doc.slice(..));
+            *selection = clamped
                 // Map through changes
                 .map(transaction.changes())
                 // Ensure all selections across all views still adhere to invariants.
@@ -1492,7 +1498,7 @@ impl Document {
         for view_data in self.view_data.values_mut() {
             view_data.view_position.anchor = transaction
                 .changes()
-                .map_pos(view_data.view_position.anchor, Assoc::Before);
+                .map_pos(view_data.view_position.anchor.min(old_len), Assoc::Before);
         }
 
         // generate revert to savepoint
@@ -1677,6 +1683,58 @@ impl Document {
     /// that must not influence the server.
     pub fn apply_temporary(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
         self.apply_inner(transaction, view_id, false)
+    }
+
+    /// Apply a [`Transaction`] to the [`Document`] without recording it in history or marking
+    /// the document as modified. Intended for internal, read-only buffers.
+    pub fn apply_log_transaction(&mut self, transaction: &Transaction, view_id: ViewId) -> bool {
+        let text_len = self.text.len_chars();
+
+        // Log buffers don't participate in normal editing flows, so stale selections from prior
+        // content are not meaningful. Reset them before remapping any internal transaction.
+        for selection in self.selections.values_mut() {
+            *selection = Selection::point(text_len);
+        }
+        for view_data in self.view_data.values_mut() {
+            view_data.view_position.anchor = view_data.view_position.anchor.min(text_len);
+        }
+
+        let success = self.apply_impl(transaction, view_id, false);
+        if success && !transaction.changes().is_empty() {
+            self.changes = ChangeSet::new(self.text().slice(..));
+            self.old_state = None;
+            self.modified_since_accessed = false;
+            self.reset_modified();
+        }
+        success
+    }
+
+    /// Replace the contents of an internal log buffer without participating in history.
+    pub fn replace_log_contents(&mut self, contents: &str) {
+        let new_text = Rope::from_str(contents);
+        let new_len = new_text.len_chars();
+
+        self.text = new_text;
+        self.version += 1;
+        if let Some(language) = self.language.clone() {
+            let loader = self.syn_loader.load();
+            self.set_language(Some(language), &loader);
+        }
+
+        for selection in self.selections.values_mut() {
+            *selection = selection
+                .clone()
+                .transform(|range| Range::new(range.anchor.min(new_len), range.head.min(new_len)))
+                .ensure_invariants(self.text.slice(..));
+        }
+        for view_data in self.view_data.values_mut() {
+            view_data.view_position.anchor = view_data.view_position.anchor.min(new_len);
+        }
+
+        self.changes = ChangeSet::new(self.text().slice(..));
+        self.old_state = None;
+        self.modified_since_accessed = false;
+        self.reset_modified();
     }
 
     fn undo_redo_impl(&mut self, view: &mut View, undo: bool) -> bool {
@@ -2131,8 +2189,20 @@ impl Document {
     }
 
     pub fn display_name(&self) -> Cow<'_, str> {
+        if let Some(name) = self.custom_display_name.as_deref() {
+            return Cow::Borrowed(name);
+        }
+
         self.relative_path()
             .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
+    }
+
+    pub fn set_display_name(&mut self, name: impl Into<String>) {
+        self.custom_display_name = Some(name.into());
+    }
+
+    pub fn clear_display_name(&mut self) {
+        self.custom_display_name = None;
     }
 
     // transact(Fn) ?
@@ -2704,6 +2774,49 @@ mod test {
             .to_string(),
             helix_core::NATIVE_LINE_ENDING.as_str()
         );
+    }
+
+    #[test]
+    fn apply_log_transaction_normalizes_stale_empty_buffer_state() {
+        let mut doc = Document::from(
+            Rope::from(""),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        let view = ViewId::default();
+
+        doc.selections.insert(view, Selection::single(1, 1));
+        doc.view_data_mut(view).view_position.anchor = 1;
+
+        let transaction = Transaction::new(doc.text()).insert_at_eof("x".into());
+        assert!(doc.apply_log_transaction(&transaction, view));
+
+        let selection = doc.selection(view).primary();
+        assert!(selection.anchor <= doc.text().len_chars());
+        assert!(selection.head <= doc.text().len_chars());
+        assert!(doc.view_data(view).view_position.anchor <= doc.text().len_chars());
+        assert_eq!(doc.text().to_string(), "x");
+    }
+
+    #[test]
+    fn replace_log_contents_preserves_position_when_in_range() {
+        let mut doc = Document::from(
+            Rope::from("hello\nworld\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        let view = ViewId::default();
+
+        doc.set_selection(view, Selection::single(3, 3));
+        doc.view_data_mut(view).view_position.anchor = 4;
+
+        doc.replace_log_contents("hello\nworld!\nextra\n");
+
+        let selection = doc.selection(view).primary();
+        assert_eq!(selection.cursor(doc.text().slice(..)), 3);
+        assert_eq!(doc.view_data(view).view_position.anchor, 4);
     }
 
     macro_rules! decode {

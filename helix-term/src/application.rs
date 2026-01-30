@@ -28,6 +28,7 @@ use crate::{
     keymap::Keymaps,
     ui::{self, overlay::overlaid},
 };
+use helix_log::{LogEvent, LogHub, LogKind};
 
 use log::{debug, error, info, warn};
 use std::{
@@ -79,6 +80,8 @@ pub struct Application {
     lsp_progress: LspProgressMap,
 
     theme_mode: Option<theme::Mode>,
+    log_hub: LogHub,
+    log_receiver: tokio::sync::mpsc::UnboundedReceiver<LogEvent>,
 }
 
 #[cfg(feature = "integration")]
@@ -96,6 +99,8 @@ impl Application {
         config: Config,
         lang_loader: syntax::Loader,
         workspace_trust: helix_loader::workspace_trust::WorkspaceTrust,
+        log_hub: LogHub,
+        log_receiver: tokio::sync::mpsc::UnboundedReceiver<LogEvent>,
     ) -> Result<Self, Error> {
         #[cfg(feature = "integration")]
         setup_integration_logging();
@@ -130,6 +135,7 @@ impl Application {
             })),
             handlers,
             workspace_trust,
+            log_hub.clone(),
         );
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
@@ -253,6 +259,8 @@ impl Application {
             jobs,
             lsp_progress: LspProgressMap::new(),
             theme_mode,
+            log_hub,
+            log_receiver,
         };
 
         Ok(app)
@@ -342,6 +350,11 @@ impl Application {
                     // TODO: show multiple status messages at once to avoid clobbering
                     self.editor.status_msg = Some((msg.message, severity));
                     helix_event::request_redraw();
+                }
+                Some(event) = self.log_receiver.recv() => {
+                    if self.editor.handle_log_event(event) {
+                        helix_event::request_redraw();
+                    }
                 }
                 Some(callback) = self.jobs.wait_futures.next() => {
                     if let Some(job) = self.jobs.handle_callback(&mut self.editor, &mut self.compositor, callback) {
@@ -854,6 +867,22 @@ impl Application {
                         self.handle_show_message(params.typ, params.message);
                     }
                     Notification::LogMessage(params) => {
+                        let server_name = {
+                            let language_server = language_server!();
+                            language_server.name().to_string()
+                        };
+                        let logger = self.log_hub.logger(
+                            LogKind::Lsp,
+                            format!("Log: LSP {server_name} ({server_id})"),
+                        );
+                        match params.typ {
+                            lsp::MessageType::ERROR => logger.error(&params.message),
+                            lsp::MessageType::WARNING => logger.warn(&params.message),
+                            lsp::MessageType::INFO | lsp::MessageType::LOG => {
+                                logger.info(&params.message)
+                            }
+                            _ => logger.info(&params.message),
+                        }
                         log::info!("window/logMessage: {:?}", params);
                     }
                     Notification::ProgressMessage(params)

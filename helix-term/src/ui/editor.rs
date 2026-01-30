@@ -684,13 +684,18 @@ impl EditorView {
         let current_doc = view!(editor).doc;
 
         for doc in editor.documents() {
-            let fname = doc
-                .path()
-                .unwrap_or(&scratch)
-                .file_name()
-                .unwrap_or_default()
-                .to_str()
-                .unwrap_or_default();
+            let is_virtual = editor.is_log_buffer(doc.id());
+            let name = if is_virtual {
+                doc.display_name().into_owned()
+            } else {
+                doc.path()
+                    .unwrap_or(&scratch)
+                    .file_name()
+                    .unwrap_or_default()
+                    .to_str()
+                    .unwrap_or_default()
+                    .to_string()
+            };
 
             let style = if current_doc == doc.id() {
                 bufferline_active
@@ -698,7 +703,11 @@ impl EditorView {
                 bufferline_inactive
             };
 
-            let text = format!(" {}{} ", fname, if doc.is_modified() { "[+]" } else { "" });
+            let mut text = format!(" {}", name);
+            if doc.is_modified() {
+                text.push_str(" [+]");
+            }
+            text.push(' ');
             let used_width = viewport.x.saturating_sub(x);
             let rem_width = surface.area.width.saturating_sub(used_width);
 

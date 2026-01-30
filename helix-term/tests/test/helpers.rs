@@ -8,6 +8,7 @@ use std::{
 use anyhow::bail;
 use helix_core::{diagnostic::Severity, test, Selection, Transaction};
 use helix_loader::workspace_trust::WorkspaceTrust;
+use helix_log::{LogHub, DEFAULT_LOG_MAX_LINES};
 use helix_term::{application::Application, args::Args, config::Config, keymap::merge_keys};
 use helix_view::{
     current_ref, doc,
@@ -203,12 +204,17 @@ pub async fn test_key_sequence_with_input_text<T: Into<TestCase>>(
 
     let mut app = match app {
         Some(app) => app,
-        None => Application::new(
-            Args::default(),
-            test_config(),
-            test_syntax_loader(None),
-            WorkspaceTrust::fully_trusted(),
-        )?,
+        None => {
+            let (hub, receiver) = LogHub::new(DEFAULT_LOG_MAX_LINES);
+            Application::new(
+                Args::default(),
+                test_config(),
+                test_syntax_loader(None),
+                WorkspaceTrust::fully_trusted(),
+                hub,
+                receiver,
+            )?
+        }
     };
 
     let (view, doc) = helix_view::current!(app.editor);
@@ -412,11 +418,14 @@ impl AppBuilder {
             bail!("Having the directory {path:?} in args.files[0] is not yet supported for integration tests");
         }
 
+        let (hub, receiver) = LogHub::new(DEFAULT_LOG_MAX_LINES);
         let mut app = Application::new(
             self.args,
             self.config,
             self.syn_loader,
             WorkspaceTrust::fully_trusted(),
+            hub,
+            receiver,
         )?;
 
         if let Some((text, selection)) = self.input {

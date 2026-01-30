@@ -68,7 +68,6 @@ pub fn general() -> std::io::Result<()> {
 
     let config_file = helix_loader::config_file();
     let lang_file = helix_loader::lang_config_file();
-    let log_file = helix_loader::log_file();
     let rt_dirs = helix_loader::runtime_dirs();
 
     if config_file.exists() {
@@ -81,7 +80,6 @@ pub fn general() -> std::io::Result<()> {
     } else {
         writeln!(stdout, "Language file: default")?;
     }
-    writeln!(stdout, "Log file: {}", log_file.display())?;
     writeln!(
         stdout,
         "Runtime directories: {}",

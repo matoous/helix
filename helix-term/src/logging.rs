@@ -60,6 +60,14 @@ pub fn init_file(level: log::LevelFilter, path: &Path) -> std::io::Result<()> {
     install(level, Box::new(file)).map_err(std::io::Error::other)
 }
 
+/// Install the global logger writing to the given sink.
+pub fn init_writer<W>(level: log::LevelFilter, writer: W) -> Result<(), log::SetLoggerError>
+where
+    W: Write + Send + 'static,
+{
+    install(level, Box::new(writer))
+}
+
 /// Install the global logger writing to stdout (used by integration tests).
 #[cfg(feature = "integration")]
 pub fn init_stdout(level: log::LevelFilter) {

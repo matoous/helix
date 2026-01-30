@@ -44,6 +44,7 @@ use helix_core::{
     visual_offset_from_block, Deletion, LineEnding, Position, Range, Rope, RopeReader, RopeSlice,
     Selection, SmallVec, Syntax, Tendril, Transaction,
 };
+use helix_log::LogBufferItem;
 use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
     editor::{Action, Motion},
@@ -408,6 +409,7 @@ impl MappableCommand {
         file_explorer_in_current_directory, "Open file explorer at current working directory",
         code_action, "Perform code action",
         buffer_picker, "Open buffer picker",
+        log_picker, "Open log picker",
         jumplist_picker, "Open jumplist picker",
         symbol_picker, "Open symbol picker",
         syntax_symbol_picker, "Open symbol picker from syntax information",
@@ -3314,8 +3316,11 @@ fn buffer_picker(cx: &mut Context) {
     struct BufferMeta<'a> {
         id: DocumentId,
         path: Option<Cow<'a, Path>>,
+        display_name: String,
         is_modified: bool,
         is_current: bool,
+        is_readonly: bool,
+        is_virtual: bool,
         focused_at: std::time::Instant,
     }
 
@@ -3325,8 +3330,11 @@ fn buffer_picker(cx: &mut Context) {
             .path()
             .map(ToOwned::to_owned)
             .map(helix_stdx::path::get_relative_path),
+        display_name: doc.display_name().into_owned(),
         is_modified: doc.is_modified(),
         is_current: doc.id() == current,
+        is_readonly: doc.readonly,
+        is_virtual: cx.editor.is_log_buffer(doc.id()),
         focused_at: doc.focused_at,
     };
 
@@ -3350,9 +3358,19 @@ fn buffer_picker(cx: &mut Context) {
             if meta.is_current {
                 flags.push('*');
             }
+            if meta.is_readonly {
+                flags.push('%');
+            }
+            if meta.is_virtual {
+                flags.push('v');
+            }
             flags.into()
         }),
         PickerColumn::new("path", |meta: &BufferMeta, config: &PathStyleConfig| {
+            if meta.is_virtual {
+                return meta.display_name.clone().into();
+            }
+
             config.stylize(meta.path.as_deref(), None)
         }),
     ];
@@ -3388,6 +3406,27 @@ fn buffer_picker(cx: &mut Context) {
         });
         Some((meta.id.into(), lines))
     });
+    cx.push_layer(Box::new(overlaid(picker)));
+}
+
+fn log_picker(cx: &mut Context) {
+    cx.editor.ensure_helix_log();
+    let items = cx.editor.log_buffer_items();
+
+    if items.is_empty() {
+        cx.editor.set_status("No log buffers available");
+        return;
+    }
+
+    let columns = [
+        PickerColumn::new("name", |item: &LogBufferItem, _| item.name.as_str().into()),
+        PickerColumn::new("type", |item: &LogBufferItem, _| item.kind.label().into()),
+    ];
+
+    let picker = Picker::new(columns, 0, items, (), |cx, item, action| {
+        cx.editor.open_log_buffer(item.kind, &item.name, action);
+    });
+
     cx.push_layer(Box::new(overlaid(picker)));
 }
 

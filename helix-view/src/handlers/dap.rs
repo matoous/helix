@@ -7,6 +7,7 @@ use helix_core::Selection;
 use helix_dap::{
     self as dap, registry::DebugAdapterId, Client, ConnectionType, Payload, Request, ThreadId,
 };
+use helix_log::LogKind;
 use helix_lsp::block_on;
 use log::{error, warn};
 use serde_json::{json, Value};
@@ -328,6 +329,17 @@ impl Editor {
                             }
                             None => "Debug:".to_owned(),
                         };
+
+                        let adapter_name = self
+                            .debug_adapters
+                            .get_client(id)
+                            .and_then(|client| {
+                                client.config.as_ref().map(|config| config.name.clone())
+                            })
+                            .unwrap_or_else(|| "debugger".to_string());
+                        let logger =
+                            self.logger(LogKind::Dap, format!("Log: DAP {adapter_name} ({id})"));
+                        logger.info(&format!("{} {}", prefix, output));
 
                         log::info!("{}", output);
                         self.set_status(format!("{} {}", prefix, output));

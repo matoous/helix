@@ -16,6 +16,7 @@ use crate::{
 };
 use helix_event::dispatch;
 use helix_loader::workspace_trust::{ImplicitTrustLevel, TrustQuery, WorkspaceTrust};
+use helix_log::{LogBufferItem, LogEvent, LogHub, LogKind};
 use helix_vcs::DiffProviderRegistry;
 
 use futures_util::stream::select_all::SelectAll;
@@ -50,7 +51,7 @@ use helix_core::{
         self,
         config::{AutoPairConfig, IndentationHeuristic, LanguageServerFeature, SoftWrap},
     },
-    Change, LineEnding, Position, Range, Selection, Uri, NATIVE_LINE_ENDING,
+    Change, LineEnding, Position, Range, Rope, Selection, Uri, NATIVE_LINE_ENDING,
 };
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
@@ -1270,6 +1271,27 @@ use futures_util::stream::{Flatten, Once};
 
 type Diagnostics = BTreeMap<Uri, Vec<(lsp::Diagnostic, DiagnosticProvider)>>;
 
+/// Identifies a specific log buffer in the editor's document table.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct LogBufferKey {
+    kind: LogKind,
+    name: String,
+}
+
+/// Tracks open log buffer documents within the editor.
+struct LogBufferRegistry {
+    buffers: HashMap<LogBufferKey, DocumentId>,
+}
+
+impl LogBufferRegistry {
+    /// Create an empty registry.
+    fn new() -> Self {
+        Self {
+            buffers: HashMap::new(),
+        }
+    }
+}
+
 pub struct Editor {
     /// Current editing mode.
     pub mode: Mode,
@@ -1294,6 +1316,8 @@ pub struct Editor {
 
     pub debug_adapters: dap::registry::Registry,
     pub breakpoints: HashMap<PathBuf, Vec<Breakpoint>>,
+    log_buffers: LogBufferRegistry,
+    log_hub: LogHub,
 
     pub syn_loader: Arc<ArcSwap<syntax::Loader>>,
     pub theme_loader: Arc<theme::Loader>,
@@ -1417,6 +1441,7 @@ impl Editor {
         config: Arc<dyn DynAccess<Config>>,
         handlers: Handlers,
         workspace_trust: WorkspaceTrust,
+        log_hub: LogHub,
     ) -> Self {
         let language_servers = helix_lsp::Registry::new(syn_loader.clone());
         let conf = config.load();
@@ -1443,6 +1468,8 @@ impl Editor {
             diff_providers: DiffProviderRegistry::default(),
             debug_adapters: dap::registry::Registry::new(),
             breakpoints: HashMap::new(),
+            log_buffers: LogBufferRegistry::new(),
+            log_hub,
             syn_loader,
             theme_loader,
             last_theme: None,
@@ -1479,6 +1506,166 @@ impl Editor {
     pub fn menu_border(&self) -> bool {
         self.config().popup_border == PopupBorderConfig::All
             || self.config().popup_border == PopupBorderConfig::Menu
+    }
+
+    pub fn log_buffer_items(&self) -> Vec<LogBufferItem> {
+        let mut items = self.log_hub.buffers();
+        items.sort_by(|a, b| a.name.cmp(&b.name));
+        items
+    }
+
+    /// Create a named logger backed by the central log hub.
+    pub fn logger(&self, kind: LogKind, name: impl Into<String>) -> helix_log::Logger {
+        self.log_hub.logger(kind, name)
+    }
+
+    /// Returns whether a document id corresponds to a log buffer document.
+    pub fn is_log_buffer(&self, doc_id: DocumentId) -> bool {
+        self.log_buffers
+            .buffers
+            .values()
+            .any(|entry| *entry == doc_id)
+    }
+
+    /// Open the Helix log buffer in the current view.
+    pub fn open_helix_log(&mut self, action: Action) -> DocumentId {
+        self.open_log_buffer(LogKind::Helix, "Log: Helix", action)
+    }
+
+    /// Ensure the Helix log buffer exists, without opening it.
+    pub fn ensure_helix_log(&mut self) -> DocumentId {
+        self.ensure_log_buffer(LogKind::Helix, "Log: Helix")
+    }
+
+    /// Open (or create) a specific named log buffer.
+    pub fn open_log_buffer(&mut self, kind: LogKind, name: &str, action: Action) -> DocumentId {
+        let doc_id = self.ensure_log_buffer(kind, name);
+        self.switch(doc_id, action);
+        doc_id
+    }
+
+    /// Apply a log event to an open log buffer, if it exists.
+    /// Returns whether a visible log buffer was updated.
+    pub fn handle_log_event(&mut self, event: LogEvent) -> bool {
+        let key = LogBufferKey {
+            kind: event.kind,
+            name: event.name.clone(),
+        };
+        let Some(doc_id) = self.log_buffers.buffers.get(&key).copied() else {
+            return false;
+        };
+        let is_visible = self.tree.views().any(|(view, _)| view.doc == doc_id);
+        self.refresh_log_buffer(doc_id, event.kind, &event.name);
+        is_visible
+    }
+
+    /// Create a log buffer document if it doesn't exist, returning its document id.
+    fn ensure_log_buffer(&mut self, kind: LogKind, name: &str) -> DocumentId {
+        let key = LogBufferKey {
+            kind,
+            name: name.to_string(),
+        };
+        if let Some(doc_id) = self.log_buffers.buffers.get(&key).copied() {
+            if self.documents.contains_key(&doc_id) {
+                self.refresh_log_buffer(doc_id, kind, name);
+                return doc_id;
+            }
+        }
+
+        self.log_hub.ensure_buffer(kind, name);
+        let content = self.log_hub.buffer_content(kind, name).unwrap_or_default();
+        let doc_id = self.create_log_document(name, &content);
+        self.log_buffers.buffers.insert(key, doc_id);
+        doc_id
+    }
+
+    /// Create a read-only document for a log buffer with the provided contents.
+    fn create_log_document(&mut self, name: &str, content: &str) -> DocumentId {
+        let mut doc = Document::from(
+            Rope::from_str(content),
+            None,
+            Arc::clone(&self.config),
+            Arc::clone(&self.syn_loader),
+        );
+        let loader = self.syn_loader.load();
+        let _ = doc.set_language_by_language_id("log", &loader);
+        doc.readonly = true;
+        doc.set_display_name(name.to_string());
+        doc.reset_modified();
+        self.new_document(doc)
+    }
+
+    /// Replace the visible log document contents from the hub.
+    fn refresh_log_buffer(&mut self, doc_id: DocumentId, kind: LogKind, name: &str) {
+        let content = self.log_hub.buffer_content(kind, name).unwrap_or_default();
+        let Some(doc) = self.documents.get_mut(&doc_id) else {
+            return;
+        };
+        doc.replace_log_contents(&content);
+    }
+
+    /// Close a log buffer document without discarding its content from the log hub.
+    fn hide_log_buffer(&mut self, doc_id: DocumentId) {
+        enum Action {
+            Close(ViewId),
+            ReplaceDoc(ViewId, DocumentId),
+        }
+
+        let actions: Vec<Action> = self
+            .tree
+            .views_mut()
+            .filter_map(|(view, _focus)| {
+                view.remove_document(&doc_id);
+
+                if view.doc == doc_id {
+                    if let Some(doc) = self.documents.get_mut(&doc_id) {
+                        doc.remove_view(view.id);
+                    }
+                    if let Some(prev_doc) = view.docs_access_history.pop() {
+                        Some(Action::ReplaceDoc(view.id, prev_doc))
+                    } else {
+                        Some(Action::Close(view.id))
+                    }
+                } else {
+                    None
+                }
+            })
+            .collect();
+
+        for action in actions {
+            match action {
+                Action::Close(view_id) => {
+                    self.close(view_id);
+                }
+                Action::ReplaceDoc(view_id, doc_id) => {
+                    self.replace_document_in_view(view_id, doc_id);
+                }
+            }
+        }
+
+        self.saves.remove(&doc_id);
+        self.documents.remove(&doc_id);
+        self.log_buffers.buffers.retain(|_, id| *id != doc_id);
+
+        if self.tree.views().next().is_none() {
+            let doc_id = self
+                .documents
+                .iter()
+                .find_map(|(&id, _)| (!self.is_log_buffer(id)).then_some(id))
+                .unwrap_or_else(|| {
+                    self.new_document(Document::default(
+                        self.config.clone(),
+                        self.syn_loader.clone(),
+                    ))
+                });
+            let view = View::new(doc_id, self.config().gutters.clone());
+            let view_id = self.tree.insert(view);
+            let doc = doc_mut!(self, &doc_id);
+            doc.ensure_view_init(view_id);
+            doc.mark_as_focused();
+        }
+
+        self._refresh();
     }
 
     pub fn apply_motion<F: Fn(&mut Self) + 'static>(&mut self, motion: F) {
@@ -2161,6 +2348,11 @@ impl Editor {
         };
         if !force && doc.is_modified() {
             return Err(CloseError::BufferModified(doc.display_name().into_owned()));
+        }
+
+        if self.is_log_buffer(doc_id) {
+            self.hide_log_buffer(doc_id);
+            return Ok(());
         }
 
         // This will also disallow any follow-up writes

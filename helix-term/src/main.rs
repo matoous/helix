@@ -1,10 +1,16 @@
 use anyhow::{Context, Error, Result};
 use helix_loader::VERSION_AND_GIT_HASH;
+use helix_log::{LogHub, LogKind, DEFAULT_LOG_MAX_LINES};
 use helix_term::application::Application;
 use helix_term::args::Args;
 use helix_term::config::{Config, ConfigLoadError};
 
-fn setup_logging(verbosity: u64) -> Result<()> {
+fn setup_logging(
+    verbosity: u64,
+) -> Result<(
+    LogHub,
+    tokio::sync::mpsc::UnboundedReceiver<helix_log::LogEvent>,
+)> {
     let level = match verbosity {
         0 => log::LevelFilter::Warn,
         1 => log::LevelFilter::Info,
@@ -12,9 +18,12 @@ fn setup_logging(verbosity: u64) -> Result<()> {
         _3_or_more => log::LevelFilter::Trace,
     };
 
-    helix_term::logging::init_file(level, &helix_loader::log_file())?;
+    let (hub, receiver) = LogHub::new(DEFAULT_LOG_MAX_LINES);
+    let log_writer = hub.writer(LogKind::Helix, "Log: Helix");
 
-    Ok(())
+    helix_term::logging::init_writer(level, log_writer)?;
+
+    Ok((hub, receiver))
 }
 
 fn main() -> Result<()> {
@@ -27,7 +36,6 @@ async fn main_impl() -> Result<i32> {
     let args = Args::parse_args().context("could not parse arguments")?;
 
     helix_loader::initialize_config_file(args.config_file.clone());
-    helix_loader::initialize_log_file(args.log_file.clone());
 
     // Help has a higher priority and should be handled separately.
     if args.display_help {
@@ -55,8 +63,6 @@ FLAGS:
     -g, --grammar {{fetch|build}}    Fetch or builds tree-sitter grammars listed in languages.toml.
     -c, --config <file>            Specify a file to use for configuration
     -v                             Increase logging verbosity each use for up to 3 times
-    --log <file>                   Specify a file to use for logging
-                                   (default file: {})
     -V, --version                  Print version information
     --vsplit                       Split all given files vertically into different windows
     --hsplit                       Split all given files horizontally into different windows
@@ -68,7 +74,6 @@ FLAGS:
             VERSION_AND_GIT_HASH,
             env!("CARGO_PKG_AUTHORS"),
             env!("CARGO_PKG_DESCRIPTION"),
-            helix_loader::default_log_file().display(),
         );
         std::process::exit(0);
     }
@@ -100,7 +105,8 @@ FLAGS:
         return Ok(0);
     }
 
-    setup_logging(args.verbosity).context("failed to initialize logging")?;
+    let (log_hub, log_receiver) =
+        setup_logging(args.verbosity).context("failed to initialize logging")?;
 
     // NOTE: Set the working directory early so the correct configuration is loaded. Be aware that
     // Application::new() depends on this logic so it must be updated if this changes.
@@ -144,8 +150,15 @@ FLAGS:
         });
 
     // TODO: use the thread local executor to spawn the application task separately from the work pool
-    let mut app = Application::new(args, config, lang_loader, workspace_trust)
-        .context("unable to start Helix")?;
+    let mut app = Application::new(
+        args,
+        config,
+        lang_loader,
+        workspace_trust,
+        log_hub,
+        log_receiver,
+    )
+    .context("unable to start Helix")?;
     let mut events = app.event_stream();
 
     let exit_code = app.run(&mut events).await?;

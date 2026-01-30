@@ -10,6 +10,7 @@ use helix_core::command_line::{Args, Flag, Signature, Token, TokenKind};
 use helix_core::fuzzy::fuzzy_match;
 use helix_core::indent::MAX_INDENT;
 use helix_core::line_ending;
+use helix_log::LogBufferItem;
 use helix_stdx::path::home_dir;
 use helix_view::document::{read_to_string, DEFAULT_LANGUAGE_NAME};
 use helix_view::editor::{CloseError, ConfigEvent};
@@ -2584,7 +2585,49 @@ fn open_log(cx: &mut compositor::Context, _args: Args, event: PromptEvent) -> an
         return Ok(());
     }
 
-    cx.editor.open(&helix_loader::log_file(), Action::Replace)?;
+    cx.editor.open_helix_log(Action::Replace);
+    Ok(())
+}
+
+fn log_picker_cmd(
+    cx: &mut compositor::Context,
+    _args: Args,
+    event: PromptEvent,
+) -> anyhow::Result<()> {
+    if event != PromptEvent::Validate {
+        return Ok(());
+    }
+
+    cx.editor.ensure_helix_log();
+    let items = cx.editor.log_buffer_items();
+
+    if items.is_empty() {
+        cx.editor.set_status("No log buffers available");
+        return Ok(());
+    }
+
+    let callback = async move {
+        let call: job::Callback = Callback::EditorCompositor(Box::new(
+            move |_editor: &mut Editor, compositor: &mut Compositor| {
+                let columns = [
+                    ui::PickerColumn::new("name", |item: &LogBufferItem, _| {
+                        item.name.as_str().into()
+                    }),
+                    ui::PickerColumn::new("type", |item: &LogBufferItem, _| {
+                        item.kind.label().into()
+                    }),
+                ];
+                let picker = ui::Picker::new(columns, 0, items, (), move |cx, item, action| {
+                    cx.editor.open_log_buffer(item.kind, &item.name, action);
+                });
+
+                compositor.push(Box::new(overlaid(picker)));
+            },
+        ));
+        Ok(call)
+    };
+
+    cx.jobs.callback(callback);
     Ok(())
 }
 
@@ -3926,8 +3969,19 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
     TypableCommand {
         name: "log-open",
         aliases: &[],
-        doc: "Open the helix log file.",
+        doc: "Open the helix log buffer.",
         fun: open_log,
+        completer: CommandCompleter::none(),
+        signature: Signature {
+            positionals: (0, Some(0)),
+            ..Signature::DEFAULT
+        },
+    },
+    TypableCommand {
+        name: "log-picker",
+        aliases: &["log_picker"],
+        doc: "Open the log picker.",
+        fun: log_picker_cmd,
         completer: CommandCompleter::none(),
         signature: Signature {
             positionals: (0, Some(0)),
