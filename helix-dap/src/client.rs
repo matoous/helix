@@ -354,7 +354,7 @@ impl Client {
             supports_variable_paging: Some(false),
             supports_run_in_terminal_request: Some(true),
             supports_memory_references: Some(false),
-            supports_progress_reporting: Some(false),
+            supports_progress_reporting: Some(true),
             supports_invalidated_event: Some(false),
         };
 

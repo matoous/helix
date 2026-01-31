@@ -1,19 +1,30 @@
 use std::{collections::HashMap, time::Instant};
 
+use helix_dap::registry::DebugAdapterId;
 use helix_lsp::LanguageServerId;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ProgressSpinnerId {
+    Lsp(LanguageServerId),
+    Dap(DebugAdapterId),
+}
 
 #[derive(Default, Debug)]
 pub struct ProgressSpinners {
-    inner: HashMap<LanguageServerId, Spinner>,
+    inner: HashMap<ProgressSpinnerId, Spinner>,
 }
 
 impl ProgressSpinners {
-    pub fn get(&self, id: LanguageServerId) -> Option<&Spinner> {
+    pub fn get(&self, id: ProgressSpinnerId) -> Option<&Spinner> {
         self.inner.get(&id)
     }
 
-    pub fn get_or_create(&mut self, id: LanguageServerId) -> &mut Spinner {
+    pub fn get_or_create(&mut self, id: ProgressSpinnerId) -> &mut Spinner {
         self.inner.entry(id).or_default()
+    }
+
+    pub fn remove(&mut self, id: ProgressSpinnerId) {
+        self.inner.remove(&id);
     }
 }
 

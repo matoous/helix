@@ -1,9 +1,11 @@
 mod client;
+mod progress;
 pub mod registry;
 mod transport;
 
 pub use client::Client;
 pub use helix_dap_types::*;
+pub use progress::DapProgressMap;
 pub use transport::{Payload, Response, Transport};
 
 use serde::de::DeserializeOwned;
@@ -75,9 +77,9 @@ pub enum Event {
     LoadedSource(<events::LoadedSource as events::Event>::Body),
     Process(<events::Process as events::Event>::Body),
     Capabilities(<events::Capabilities as events::Event>::Body),
-    // ProgressStart(),
-    // ProgressUpdate(),
-    // ProgressEnd(),
+    ProgressStart(<events::ProgressStart as events::Event>::Body),
+    ProgressUpdate(<events::ProgressUpdate as events::Event>::Body),
+    ProgressEnd(<events::ProgressEnd as events::Event>::Body),
     // Invalidated(),
     Memory(<events::Memory as events::Event>::Body),
 }
@@ -100,6 +102,9 @@ impl Event {
             events::LoadedSource::EVENT => Self::LoadedSource(parse_value(body)?),
             events::Process::EVENT => Self::Process(parse_value(body)?),
             events::Capabilities::EVENT => Self::Capabilities(parse_value(body)?),
+            events::ProgressStart::EVENT => Self::ProgressStart(parse_value(body)?),
+            events::ProgressUpdate::EVENT => Self::ProgressUpdate(parse_value(body)?),
+            events::ProgressEnd::EVENT => Self::ProgressEnd(parse_value(body)?),
             events::Memory::EVENT => Self::Memory(parse_value(body)?),
             _ => return Err(Error::Unhandled),
         };

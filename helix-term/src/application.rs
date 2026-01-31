@@ -1,6 +1,7 @@
 use arc_swap::{access::Map, ArcSwap};
 use futures_util::Stream;
 use helix_core::{diagnostic::Severity, pos_at_coords, syntax, Range, Selection};
+use helix_dap::{self as dap, DapProgressMap};
 use helix_lsp::{
     lsp::{self, notification::Notification},
     util::lsp_range_to_range,
@@ -77,6 +78,7 @@ pub struct Application {
     signals: Signals,
     jobs: Jobs,
     lsp_progress: LspProgressMap,
+    dap_progress: DapProgressMap,
 
     theme_mode: Option<theme::Mode>,
 }
@@ -264,6 +266,7 @@ impl Application {
             signals,
             jobs,
             lsp_progress: LspProgressMap::new(),
+            dap_progress: DapProgressMap::new(),
             theme_mode,
         };
 
@@ -644,6 +647,127 @@ impl Application {
         ));
     }
 
+    pub async fn handle_debugger_message(
+        &mut self,
+        id: dap::registry::DebugAdapterId,
+        payload: dap::Payload,
+    ) -> bool {
+        let dap::Payload::Event(event) = &payload else {
+            return self.editor.handle_debugger_message(id, payload).await;
+        };
+
+        let parsed = match dap::Event::parse(&event.event, event.body.clone()) {
+            Ok(parsed) => parsed,
+            Err(_) => return self.editor.handle_debugger_message(id, payload).await,
+        };
+
+        let is_active = self.editor.debug_adapters.active_client_id() == Some(id);
+        let show_messages = self.editor.config().lsp.display_progress_messages
+            && !self
+                .compositor
+                .has_component(std::any::type_name::<ui::Prompt>());
+        let debugger_name = self
+            .editor
+            .debug_adapters
+            .get_client(id)
+            .and_then(|client| client.config.as_ref().map(|config| config.name.as_str()))
+            .unwrap_or("Debugger")
+            .to_owned();
+
+        let set_status = |title: Option<&str>,
+                          message: Option<&str>,
+                          percentage: Option<usize>|
+         -> Option<String> {
+            if !show_messages || !is_active {
+                return None;
+            }
+            if title.is_none() && percentage.is_none() && message.is_none() {
+                return None;
+            }
+            use std::fmt::Write as _;
+            let mut status = format!("{debugger_name}: ");
+            if let Some(percentage) = percentage {
+                write!(status, "{percentage:>2}% ").ok();
+            }
+            if let Some(title) = title {
+                status.push_str(title);
+            }
+            if title.is_some() && message.is_some() {
+                status.push_str(" ⋅ ");
+            }
+            if let Some(message) = message {
+                status.push_str(message);
+            }
+            Some(status)
+        };
+
+        match parsed {
+            dap::Event::ProgressStart(body) => {
+                self.dap_progress
+                    .start(id, body.progress_id.clone(), body.title.clone());
+
+                let editor_view = self
+                    .compositor
+                    .find::<ui::EditorView>()
+                    .expect("expected at least one EditorView");
+                let spinner = editor_view
+                    .spinners_mut()
+                    .get_or_create(ui::ProgressSpinnerId::Dap(id));
+                if spinner.is_stopped() {
+                    spinner.start();
+                }
+
+                let title = (!body.title.is_empty()).then_some(body.title.as_str());
+                if let Some(status) = set_status(title, body.message.as_deref(), body.percentage) {
+                    self.editor.set_status(status);
+                }
+                true
+            }
+            dap::Event::ProgressUpdate(body) => {
+                self.dap_progress.update(id, body.progress_id.clone());
+                let title = self
+                    .dap_progress
+                    .title(id, &body.progress_id)
+                    .and_then(|title| (!title.is_empty()).then_some(title.as_str()));
+                if let Some(status) = set_status(title, body.message.as_deref(), body.percentage) {
+                    self.editor.set_status(status);
+                }
+                true
+            }
+            dap::Event::ProgressEnd(body) => {
+                let title = self
+                    .dap_progress
+                    .title(id, &body.progress_id)
+                    .cloned()
+                    .filter(|title| !title.is_empty());
+                self.dap_progress.end(id, &body.progress_id);
+
+                let editor_view = self
+                    .compositor
+                    .find::<ui::EditorView>()
+                    .expect("expected at least one EditorView");
+                if !self.dap_progress.is_progressing(id) {
+                    editor_view
+                        .spinners_mut()
+                        .get_or_create(ui::ProgressSpinnerId::Dap(id))
+                        .stop();
+                }
+
+                if is_active {
+                    if let Some(message) = body.message.as_deref() {
+                        if let Some(status) = set_status(title.as_deref(), Some(message), None) {
+                            self.editor.set_status(status);
+                        }
+                    } else {
+                        self.editor.clear_status();
+                    }
+                }
+                true
+            }
+            _ => self.editor.handle_debugger_message(id, payload).await,
+        }
+    }
+
     #[inline(always)]
     pub async fn handle_editor_event(&mut self, event: EditorEvent) -> bool {
         log::debug!("received editor event: {:?}", event);
@@ -663,7 +787,7 @@ impl Application {
                 helix_event::request_redraw();
             }
             EditorEvent::DebuggerEvent((id, payload)) => {
-                let needs_render = self.editor.handle_debugger_message(id, payload).await;
+                let needs_render = self.handle_debugger_message(id, payload).await;
                 if needs_render {
                     self.render().await;
                 }
@@ -865,7 +989,9 @@ impl Application {
                                 } else {
                                     self.lsp_progress.end_progress(server_id, &token);
                                     if !self.lsp_progress.is_progressing(server_id) {
-                                        editor_view.spinners_mut().get_or_create(server_id).stop();
+                                        editor_view
+                                            .spinners_mut()
+                                            .remove(ui::ProgressSpinnerId::Lsp(server_id));
                                     }
                                     self.editor.clear_status();
 
@@ -909,7 +1035,9 @@ impl Application {
                             lsp::WorkDoneProgress::End(_) => {
                                 self.lsp_progress.end_progress(server_id, &token);
                                 if !self.lsp_progress.is_progressing(server_id) {
-                                    editor_view.spinners_mut().get_or_create(server_id).stop();
+                                    editor_view
+                                        .spinners_mut()
+                                        .remove(ui::ProgressSpinnerId::Lsp(server_id));
                                 };
                             }
                         }
@@ -934,6 +1062,13 @@ impl Application {
                         // Clear any diagnostics for documents with this server open.
                         for doc in self.editor.documents_mut() {
                             doc.clear_diagnostics_for_language_server(server_id);
+                        }
+
+                        // Clear progress indicators for this server.
+                        if let Some(editor_view) = self.compositor.find::<ui::EditorView>() {
+                            editor_view
+                                .spinners_mut()
+                                .remove(ui::ProgressSpinnerId::Lsp(server_id));
                         }
 
                         helix_event::dispatch(helix_view::events::LanguageServerExited {
@@ -981,7 +1116,9 @@ impl Application {
                             .compositor
                             .find::<ui::EditorView>()
                             .expect("expected at least one EditorView");
-                        let spinner = editor_view.spinners_mut().get_or_create(server_id);
+                        let spinner = editor_view
+                            .spinners_mut()
+                            .get_or_create(ui::ProgressSpinnerId::Lsp(server_id));
                         if spinner.is_stopped() {
                             spinner.start();
                         }

@@ -28,7 +28,7 @@ pub use picker::{Column as PickerColumn, FileLocation, Picker};
 pub use popup::Popup;
 pub use prompt::{Prompt, PromptEvent};
 pub use select::Select;
-pub use spinner::{ProgressSpinners, Spinner};
+pub use spinner::{ProgressSpinnerId, ProgressSpinners, Spinner};
 pub use text::Text;
 
 use helix_view::Editor;

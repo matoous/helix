@@ -9,7 +9,7 @@ use helix_view::{
     Document, Editor, View,
 };
 
-use crate::ui::ProgressSpinners;
+use crate::ui::{ProgressSpinnerId, ProgressSpinners};
 
 use helix_view::editor::StatusLineElement as StatusLineElementID;
 use tui::buffer::Buffer as Surface;
@@ -131,7 +131,7 @@ where
 {
     match element_id {
         helix_view::editor::StatusLineElement::Mode => render_mode,
-        helix_view::editor::StatusLineElement::Spinner => render_lsp_spinner,
+        helix_view::editor::StatusLineElement::Spinner => render_spinner,
         helix_view::editor::StatusLineElement::FileBaseName => render_file_base_name,
         helix_view::editor::StatusLineElement::FileName => render_file_name,
         helix_view::editor::StatusLineElement::FileAbsolutePath => render_file_absolute_path,
@@ -190,25 +190,36 @@ where
     write(context, Span::styled(content, style));
 }
 
-// TODO think about handling multiple language servers
-fn render_lsp_spinner<'a, F>(context: &mut RenderContext<'a>, write: F)
+fn render_spinner<'a, F>(context: &mut RenderContext<'a>, write: F)
 where
     F: Fn(&mut RenderContext<'a>, Span<'a>) + Copy,
 {
-    let language_server = context.doc.language_servers().next();
-    write(
-        context,
-        language_server
-            .and_then(|srv| {
-                context
-                    .spinners
-                    .get(srv.id())
-                    .and_then(|spinner| spinner.frame())
-            })
-            // Even if there's no spinner; reserve its space to avoid elements frequently shifting.
-            .unwrap_or(" ")
-            .into(),
-    );
+    let dap_spinner = context
+        .editor
+        .debug_adapters
+        .active_client_id()
+        .and_then(|id| context.spinners.get(ProgressSpinnerId::Dap(id)))
+        .and_then(|spinner| spinner.frame());
+
+    if let Some(frame) = dap_spinner {
+        write(context, frame.into());
+        return;
+    }
+
+    let lsp_spinner = context.doc.language_servers().find_map(|srv| {
+        context
+            .spinners
+            .get(ProgressSpinnerId::Lsp(srv.id()))
+            .and_then(|spinner| spinner.frame())
+    });
+
+    if let Some(frame) = lsp_spinner {
+        write(context, frame.into());
+        return;
+    }
+
+    // Even if there's no spinner; reserve its space to avoid elements frequently shifting.
+    write(context, " ".into());
 }
 
 fn render_diagnostics<'a, F>(context: &mut RenderContext<'a>, write: F)

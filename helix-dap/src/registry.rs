@@ -79,6 +79,10 @@ impl Registry {
             .and_then(|id| self.get_client_mut(id))
     }
 
+    pub fn active_client_id(&self) -> Option<DebugAdapterId> {
+        self.current_client_id
+    }
+
     pub fn set_active_client(&mut self, id: DebugAdapterId) {
         if self.get_client(id).is_some() {
             self.current_client_id = Some(id);
