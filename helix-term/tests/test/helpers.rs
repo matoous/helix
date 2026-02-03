@@ -2,7 +2,7 @@ use std::{
     io::{Read, Write},
     mem::replace,
     path::PathBuf,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::bail;
@@ -117,6 +117,7 @@ pub async fn test_key_sequences(
     should_exit: bool,
 ) -> anyhow::Result<()> {
     const TIMEOUT: Duration = Duration::from_millis(500);
+    const WRITE_TIMEOUT: Duration = Duration::from_secs(2);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     let mut rx_stream = UnboundedReceiverStream::new(rx);
     let num_inputs = inputs.len();
@@ -156,6 +157,24 @@ pub async fn test_key_sequences(
         // the inverse
         if i == num_inputs - 1 && app_exited != should_exit {
             bail!("expected app to exit: {} != {}", should_exit, app_exited);
+        }
+
+        // Wait for any pending writes so tests can reliably assert on saved state.
+        if !app_exited && app.editor.write_count > 0 {
+            let deadline = Instant::now() + WRITE_TIMEOUT;
+            while app.editor.write_count > 0 {
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    bail!("timed out waiting for pending writes to finish");
+                }
+
+                let ok =
+                    tokio::time::timeout(remaining, app.event_loop_until_idle(&mut rx_stream))
+                        .await?;
+                if !ok {
+                    bail!("application exited while waiting for pending writes");
+                }
+            }
         }
 
         if let Some(test) = test_fn {
