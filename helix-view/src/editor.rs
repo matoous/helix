@@ -45,11 +45,12 @@ pub use helix_core::diagnostic::Severity;
 use helix_core::{
     auto_pairs::AutoPairs,
     diagnostic::DiagnosticProvider,
+    encoding,
     syntax::{
         self,
         config::{AutoPairConfig, IndentationHeuristic, LanguageServerFeature, SoftWrap},
     },
-    Change, LineEnding, Position, Range, Selection, Uri, NATIVE_LINE_ENDING,
+    Change, LineEnding, Position, Range, Rope, Selection, Uri, NATIVE_LINE_ENDING,
 };
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
@@ -1883,6 +1884,34 @@ impl Editor {
             action,
             Document::default(self.config.clone(), self.syn_loader.clone()),
         )
+    }
+
+    pub fn open_virtual_document(
+        &mut self,
+        name: Option<&Path>,
+        text: &str,
+        action: Action,
+    ) -> DocumentId {
+        let mut doc = Document::from(
+            Rope::from(text),
+            Some((encoding::UTF_8, false)),
+            self.config.clone(),
+            self.syn_loader.clone(),
+        );
+
+        if let Some(name) = name {
+            let loader = self.syn_loader.load_full();
+            let language_config = if let Some(language) = loader.language_for_filename(name) {
+                Some(loader.language(language).config().clone())
+            } else {
+                None
+            };
+            doc.set_language(language_config, &loader);
+        }
+
+        doc.readonly = true;
+
+        self.new_file_from_document(action, doc)
     }
 
     pub fn new_file_from_stdin(&mut self, action: Action) -> Result<DocumentId, Error> {

@@ -532,6 +532,19 @@ impl Client {
         self.request::<requests::Evaluate>(args).await
     }
 
+    pub async fn source(&self, source: Source) -> Result<requests::SourceResponse> {
+        let source_reference = source
+            .source_reference
+            .ok_or_else(|| Error::Other(anyhow!("source request missing source_reference")))?;
+
+        let args = requests::SourceArguments {
+            source,
+            source_reference,
+        };
+
+        self.request::<requests::Source>(args).await
+    }
+
     pub fn set_exception_breakpoints(
         &self,
         filters: Vec<String>,

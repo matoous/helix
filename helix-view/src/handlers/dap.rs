@@ -58,19 +58,37 @@ pub async fn fetch_stack_trace(debugger: &mut Client, thread_id: ThreadId) {
 }
 
 pub fn jump_to_stack_frame(editor: &mut Editor, frame: &helix_dap::StackFrame) {
-    let path = if let Some(helix_dap::Source {
-        path: Some(ref path),
-        ..
-    }) = frame.source
-    {
-        path.clone()
-    } else {
-        return;
-    };
+    match frame.source.as_ref() {
+        Some(helix_dap::Source {
+            path: Some(path), ..
+        }) => {
+            if let Err(e) = editor.open(path, Action::Replace) {
+                editor.set_error(format!("Unable to jump to stack frame: {}", e));
+                return;
+            }
+        }
+        Some(source) if source.source_reference.is_some() => {
+            let response = {
+                let debugger = debugger!(editor);
+                match block_on(debugger.source(source.clone())) {
+                    Ok(response) => response,
+                    Err(err) => {
+                        editor.set_error(format!(
+                            "Unable to fetch debugger source for stack frame: {}",
+                            err
+                        ));
+                        return;
+                    }
+                }
+            };
 
-    if let Err(e) = editor.open(&path, Action::Replace) {
-        editor.set_error(format!("Unable to jump to stack frame: {}", e));
-        return;
+            editor.open_virtual_document(
+                source.name.as_deref().map(std::path::Path::new),
+                &response.content,
+                Action::Replace,
+            );
+        }
+        _ => return,
     }
 
     let (view, doc) = current!(editor);
