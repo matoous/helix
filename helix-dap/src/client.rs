@@ -317,10 +317,12 @@ impl Client {
     ) -> impl Future<Output = Result<()>> {
         let server_tx = self.server_tx.clone();
         let command = command.to_string();
+        let id = self.next_request_id();
 
         async move {
             let response = match result {
                 Ok(result) => Response {
+                    seq: id,
                     request_seq,
                     command,
                     success: true,
@@ -328,6 +330,7 @@ impl Client {
                     body: Some(result),
                 },
                 Err(error) => Response {
+                    seq: id,
                     request_seq,
                     command,
                     success: false,

@@ -1,6 +1,6 @@
 use crate::editor::{Action, Breakpoint};
 use crate::{align_view, Align, Editor};
-use anyhow::bail;
+use anyhow::{anyhow, bail};
 use dap::requests::DisconnectArguments;
 use dap::requests::ThreadsArguments;
 use helix_core::Selection;
@@ -141,6 +141,10 @@ pub fn breakpoints_changed(
         _ => {}
     };
     Ok(())
+}
+
+fn return_reply_error<T>(message: &str) -> Result<T, dap::Error> {
+    Err(dap::Error::Other(anyhow!(message.to_owned())))
 }
 
 impl Editor {
@@ -445,90 +449,108 @@ impl Editor {
                 let reply = match Request::parse(&request.command, request.arguments) {
                     Ok(Request::RunInTerminal(arguments)) => {
                         let config = self.config();
-                        let Some(config) = config.terminal.as_ref() else {
-                            self.set_error("No external terminal defined");
-                            return true;
-                        };
-
-                        let process = match std::process::Command::new(&config.command)
-                            .args(&config.args)
-                            .arg(arguments.args.join(" "))
-                            .spawn()
-                        {
-                            Ok(process) => process,
-                            Err(err) => {
-                                self.set_error(format!(
-                                    "Error starting external terminal: {}",
-                                    err
-                                ));
-                                return true;
+                        match config.terminal.as_ref() {
+                            Some(config) => match std::process::Command::new(&config.command)
+                                .args(&config.args)
+                                .arg(arguments.args.join(" "))
+                                .spawn()
+                            {
+                                Ok(process) => Ok(json!(dap::requests::RunInTerminalResponse {
+                                    process_id: Some(process.id()),
+                                    shell_process_id: None,
+                                })),
+                                Err(err) => {
+                                    self.set_error(format!(
+                                        "Error starting external terminal: {}",
+                                        err
+                                    ));
+                                    Err(dap::Error::Other(anyhow!(
+                                        "Error starting external terminal: {}",
+                                        err
+                                    )))
+                                }
+                            },
+                            None => {
+                                self.set_error("No external terminal defined");
+                                Err(dap::Error::Other(anyhow!(
+                                    "No external terminal defined"
+                                )))
                             }
-                        };
-
-                        Ok(json!(dap::requests::RunInTerminalResponse {
-                            process_id: Some(process.id()),
-                            shell_process_id: None,
-                        }))
+                        }
                     }
                     Ok(Request::StartDebugging(arguments)) => {
-                        let debugger = match self.debug_adapters.get_client_mut(id) {
-                            Some(debugger) => debugger,
+                        let setup = match self.debug_adapters.get_client_mut(id) {
+                            Some(debugger) => match (debugger.socket, debugger.config.clone()) {
+                                (Some(socket), Some(config)) => Ok((socket, config)),
+                                (None, _) => {
+                                    self.set_error("Child debugger can only be started if the parent debugger is using TCP transport.");
+                                    return_reply_error(
+                                        "Child debugger can only be started if the parent debugger is using TCP transport.",
+                                    )
+                                }
+                                (_, None) => {
+                                    error!("No configuration found for the debugger.");
+                                    return_reply_error("No configuration found for the debugger.")
+                                }
+                            },
                             None => {
                                 self.set_error("No active debugger found.");
-                                return true;
-                            }
-                        };
-                        // Currently we only support starting a child debugger if the parent is using the TCP transport
-                        let socket = match debugger.socket {
-                            Some(socket) => socket,
-                            None => {
-                                self.set_error("Child debugger can only be started if the parent debugger is using TCP transport.");
-                                return true;
+                                return_reply_error("No active debugger found.")
                             }
                         };
 
-                        let config = match debugger.config.clone() {
-                            Some(config) => config,
-                            None => {
-                                error!("No configuration found for the debugger.");
-                                return true;
+                        match setup {
+                            Ok((socket, config)) => {
+                                match self.debug_adapters.start_client(Some(socket), &config) {
+                                    Ok(client_id) => {
+                                        match self.debug_adapters.get_client_mut(client_id) {
+                                            Some(client) => {
+                                                let relaunch_resp = if let ConnectionType::Launch =
+                                                    arguments.request
+                                                {
+                                                    client.launch(arguments.configuration).await
+                                                } else {
+                                                    client.attach(arguments.configuration).await
+                                                };
+
+                                                match relaunch_resp {
+                                                    Ok(_) => Ok(json!({
+                                                        "success": true,
+                                                    })),
+                                                    Err(err) => {
+                                                        self.set_error(format!(
+                                                            "Failed to start debugging session: {:?}",
+                                                            err
+                                                        ));
+                                                        Err(dap::Error::Other(anyhow!(
+                                                            "Failed to start debugging session: {:?}",
+                                                            err
+                                                        )))
+                                                    }
+                                                }
+                                            }
+                                            None => {
+                                                self.set_error("Failed to get child debugger.");
+                                                return_reply_error(
+                                                    "Failed to get child debugger.",
+                                                )
+                                            }
+                                        }
+                                    }
+                                    Err(err) => {
+                                        self.set_error(format!(
+                                            "Failed to create child debugger: {:?}",
+                                            err
+                                        ));
+                                        Err(dap::Error::Other(anyhow!(
+                                            "Failed to create child debugger: {:?}",
+                                            err
+                                        )))
+                                    }
+                                }
                             }
-                        };
-
-                        let result = self.debug_adapters.start_client(Some(socket), &config);
-
-                        let client_id = match result {
-                            Ok(child) => child,
-                            Err(err) => {
-                                self.set_error(format!(
-                                    "Failed to create child debugger: {:?}",
-                                    err
-                                ));
-                                return true;
-                            }
-                        };
-
-                        let client = match self.debug_adapters.get_client_mut(client_id) {
-                            Some(child) => child,
-                            None => {
-                                self.set_error("Failed to get child debugger.");
-                                return true;
-                            }
-                        };
-
-                        let relaunch_resp = if let ConnectionType::Launch = arguments.request {
-                            client.launch(arguments.configuration).await
-                        } else {
-                            client.attach(arguments.configuration).await
-                        };
-                        if let Err(err) = relaunch_resp {
-                            self.set_error(format!("Failed to start debugging session: {:?}", err));
-                            return true;
+                            Err(err) => Err(err),
                         }
-
-                        Ok(json!({
-                            "success": true,
-                        }))
                     }
                     Err(err) => Err(err),
                 };

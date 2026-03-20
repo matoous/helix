@@ -24,7 +24,8 @@ pub struct Request {
 
 #[derive(Debug, PartialEq, Eq, Clone, Deserialize, Serialize)]
 pub struct Response {
-    // seq is omitted as unused and is not sent by some implementations
+    #[serde(default)]
+    pub seq: u64,
     pub request_seq: u64,
     pub success: bool,
     pub command: String,
