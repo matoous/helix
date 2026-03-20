@@ -198,6 +198,29 @@ async fn test_goto_file_impl() -> anyhow::Result<()> {
     )
     .await?;
 
+    // Ignore anchor-only fragments instead of opening a literal `#heading` file.
+    test_key_sequence(
+        &mut AppBuilder::new().with_file(file.path(), None).build()?,
+        Some("i#Heading<esc>gf"),
+        Some(&|app| {
+            assert_eq!(0, match_paths(app, vec!["#Heading"]));
+        }),
+        false,
+    )
+    .await?;
+
+    // Strip URL fragments from path-like targets before opening the file.
+    test_key_sequence(
+        &mut AppBuilder::new().with_file(file.path(), None).build()?,
+        Some("ione.js#section<esc>B;gf"),
+        Some(&|app| {
+            assert_eq!(1, match_paths(app, vec!["one.js"]));
+            assert_eq!(0, match_paths(app, vec!["one.js#section"]));
+        }),
+        false,
+    )
+    .await?;
+
     Ok(())
 }
 

@@ -1450,7 +1450,11 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
             continue;
         }
 
-        let path = path::expand(&sel);
+        let Some(sel) = strip_fragment_only_target(&sel) else {
+            continue;
+        };
+
+        let path = path::expand(sel);
         let path = &rel_path.join(path);
         if path.is_dir() {
             let picker = ui::file_picker(cx.editor, path.into());
@@ -1459,6 +1463,11 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
             cx.editor.set_error(format!("Open file failed: {:?}", e));
         }
     }
+}
+
+fn strip_fragment_only_target(target: &str) -> Option<&str> {
+    let path = target.split_once('#').map_or(target, |(path, _)| path).trim();
+    (!path.is_empty()).then_some(path)
 }
 
 /// Opens the given url. If the URL points to a valid textual file it is open in helix.
