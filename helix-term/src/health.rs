@@ -70,6 +70,10 @@ pub fn general() -> std::io::Result<()> {
     let lang_file = helix_loader::lang_config_file();
     let log_file = helix_loader::log_file();
     let rt_dirs = helix_loader::runtime_dirs();
+    let theme_dirs = rt_dirs
+        .iter()
+        .map(|dir| dir.join("themes"))
+        .collect::<Vec<_>>();
 
     if config_file.exists() {
         writeln!(stdout, "Config file: {}", config_file.display())?;
@@ -86,6 +90,15 @@ pub fn general() -> std::io::Result<()> {
         stdout,
         "Runtime directories: {}",
         rt_dirs
+            .iter()
+            .map(|d| d.to_string_lossy())
+            .collect::<Vec<_>>()
+            .join(";")
+    )?;
+    writeln!(
+        stdout,
+        "Theme directories: {}",
+        theme_dirs
             .iter()
             .map(|d| d.to_string_lossy())
             .collect::<Vec<_>>()
