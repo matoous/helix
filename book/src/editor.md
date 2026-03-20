@@ -22,6 +22,7 @@
 - [`[editor.smart-tab]` Section](#editorsmart-tab-section)
 - [`[editor.inline-diagnostics]` Section](#editorinline-diagnostics-section)
 - [`[editor.word-completion]` Section](#editorword-completion-section)
+- [`[editor.terminal]` Section](#editorterminal-section)
 
 ### `[editor]` Section
 
@@ -527,4 +528,26 @@ Example:
 enable = true
 # Set the trigger length lower so that words are completed more often
 trigger-length = 4
+```
+
+### `[editor.terminal]` Section
+
+Options for choosing the external terminal command Helix uses for features that
+launch a terminal, such as starting debug adapters in a separate terminal.
+
+If unset, Helix will fall back to an auto-detected terminal provider when
+available, such as `tmux split-window`, `wezterm cli split-pane`, `wt new-tab`,
+or `conhost`.
+
+| Key       | Description                                      | Default |
+| ---       | ---                                              | ---     |
+| `command` | The terminal executable to run                   | auto-detected |
+| `args`    | Arguments passed to the terminal executable      | `[]`    |
+
+Example:
+
+```toml
+[editor.terminal]
+command = "wezterm"
+args = ["cli", "split-pane"]
 ```
