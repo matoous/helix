@@ -13,3 +13,21 @@
  (name) @_var (#any-of? @_var "xfuncname" "wordRegex")
  value: (string) @injection.content
  (#set! injection.language "regex"))
+
+((section
+  (section_header
+   (section_name) @_section)
+  (variable
+   value: (string) @injection.content))
+ (#eq? @_section "alias")
+ (#set! injection.language "sh"))
+
+((section
+  (section_header
+   (section_name) @_section)
+  (variable
+   (name) @_name
+   value: (string) @injection.content))
+ (#eq? @_section "credential")
+ (#eq? @_name "helper")
+ (#set! injection.language "sh"))
