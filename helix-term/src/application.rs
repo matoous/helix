@@ -138,6 +138,17 @@ impl Application {
             })),
             handlers,
         );
+        let missing_runtime_dirs = helix_loader::runtime_dirs().iter().all(|dir| {
+            !dir.exists()
+                || dir
+                    .read_dir()
+                    .ok()
+                    .map(|mut entries| entries.next().is_none())
+                    != Some(false)
+        });
+        if missing_runtime_dirs {
+            editor.set_warning("No usable runtime directory found. Run `hx --health` for details.");
+        }
         Self::load_configured_theme(&mut editor, &config.load(), &mut terminal, theme_mode);
 
         let keys = Box::new(Map::new(Arc::clone(&config), |config: &Config| {
