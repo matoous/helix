@@ -366,7 +366,28 @@ fn probe_parser(grammar_name: &str) -> std::io::Result<()> {
 
     match helix_loader::grammar::get_language(grammar_name) {
         Ok(Some(_)) => writeln!(stdout, "{}", "✓".green()),
-        Ok(None) | Err(_) => writeln!(stdout, "{}", "None".yellow()),
+        Ok(None) | Err(_) => {
+            writeln!(stdout, "{}", "None".yellow())?;
+
+            let missing_runtime_dirs = helix_loader::runtime_dirs().iter().all(|dir| {
+                !dir.exists()
+                    || dir
+                        .read_dir()
+                        .ok()
+                        .map(|mut entries| entries.next().is_none())
+                        != Some(false)
+            });
+
+            if missing_runtime_dirs {
+                writeln!(
+                    stdout,
+                    "{}",
+                    "Runtime directories are missing or empty. Run `hx --health` without a language argument to inspect them.".yellow()
+                )?;
+            }
+
+            Ok(())
+        }
     }
 }
 
