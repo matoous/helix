@@ -36,7 +36,7 @@ pub fn setup(config: Arc<ArcSwap<Config>>) -> Handlers {
     let signature_hints = SignatureHelpHandler::new().spawn();
     let auto_save = AutoSaveHandler::new().spawn();
     let code_action_hint = code_action_hint::Handler::default().spawn();
-    let inlay_hints = InlayHintsHandler::default().spawn();
+    let inlay_hints = InlayHintsHandler.spawn();
     let document_colors = DocumentColorsHandler::default().spawn();
     let document_links = DocumentLinksHandler::default().spawn();
     let word_index = word_index::Handler::spawn();
