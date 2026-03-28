@@ -1193,6 +1193,7 @@ pub struct Editor {
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
+    document_path_map: HashMap<PathBuf, DocumentId>,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1345,6 +1346,7 @@ impl Editor {
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
+            document_path_map: HashMap::new(),
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
@@ -1600,9 +1602,9 @@ impl Editor {
 
     pub fn set_doc_path(&mut self, doc_id: DocumentId, path: &Path) {
         let doc = doc_mut!(self, &doc_id);
-        let old_path = doc.path();
+        let old_path = doc.path().map(|path| path.to_path_buf());
 
-        if let Some(old_path) = old_path {
+        if let Some(old_path) = old_path.as_deref() {
             // sanity check, should not occur but some callers (like an LSP) may
             // create bogus calls
             if old_path == path {
@@ -1619,6 +1621,13 @@ impl Editor {
         // we have fully unregistered this document from its LS
         doc.language_servers.clear();
         doc.set_path(Some(path));
+        let new_path = doc.path().map(|path| path.to_path_buf());
+        if let Some(old_path) = old_path {
+            self.document_path_map.remove(&old_path);
+        }
+        if let Some(new_path) = new_path {
+            self.document_path_map.insert(new_path, doc_id);
+        }
         doc.detect_editor_config();
         self.refresh_doc_language(doc_id)
     }
@@ -1800,6 +1809,9 @@ impl Editor {
                     // Copy `doc.id` into a variable before calling `self.documents.remove`, which requires a mutable
                     // borrow, invalidating direct access to `doc.id`.
                     let id = doc.id;
+                    if let Some(path) = doc.path() {
+                        self.document_path_map.remove(path);
+                    }
                     self.documents.remove(&id);
 
                     // Remove the scratch buffer from any jumplists
@@ -1877,6 +1889,9 @@ impl Editor {
         self.next_document_id =
             DocumentId(unsafe { NonZeroUsize::new_unchecked(self.next_document_id.0.get() + 1) });
         doc.id = id;
+        if let Some(path) = doc.path() {
+            self.document_path_map.insert(path.to_path_buf(), id);
+        }
         self.documents.insert(id, doc);
 
         let (save_sender, save_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -1922,7 +1937,7 @@ impl Editor {
     }
 
     pub fn document_id_by_path(&self, path: &Path) -> Option<DocumentId> {
-        self.document_by_path(path).map(|doc| doc.id)
+        self.document_path_map.get(path).copied()
     }
 
     // ??? possible use for integration tests
@@ -2024,6 +2039,9 @@ impl Editor {
         }
 
         let doc = self.documents.remove(&doc_id).unwrap();
+        if let Some(path) = doc.path() {
+            self.document_path_map.remove(path);
+        }
 
         // If the document we removed was visible in all views, we will have no more views. We don't
         // want to close the editor just for a simple buffer close, so we need to create a new view
@@ -2178,13 +2196,13 @@ impl Editor {
     }
 
     pub fn document_by_path<P: AsRef<Path>>(&self, path: P) -> Option<&Document> {
-        self.documents()
-            .find(|doc| doc.path().map(|p| p == path.as_ref()).unwrap_or(false))
+        self.document_id_by_path(path.as_ref())
+            .and_then(|id| self.document(id))
     }
 
     pub fn document_by_path_mut<P: AsRef<Path>>(&mut self, path: P) -> Option<&mut Document> {
-        self.documents_mut()
-            .find(|doc| doc.path().map(|p| p == path.as_ref()).unwrap_or(false))
+        let id = self.document_id_by_path(path.as_ref())?;
+        self.document_mut(id)
     }
 
     /// Returns all supported diagnostics for the document
