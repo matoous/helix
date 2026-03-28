@@ -273,7 +273,9 @@ impl Transport {
                     }
 
                     // Close any outstanding requests.
-                    for (id, tx) in transport.pending_requests.lock().await.drain() {
+                    let pending_requests: Vec<_> =
+                        transport.pending_requests.lock().await.drain().collect();
+                    for (id, tx) in pending_requests {
                         match tx.send(Err(Error::StreamClosed)).await {
                             Ok(_) => (),
                             Err(_) => {
