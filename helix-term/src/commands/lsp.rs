@@ -1232,42 +1232,66 @@ pub fn rename_symbol(cx: &mut Context) {
 
 pub fn select_references_to_symbol_under_cursor(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
-    let language_server =
-        language_server_with_feature!(cx.editor, doc, LanguageServerFeature::DocumentHighlight);
-    let offset_encoding = language_server.offset_encoding();
-    let pos = doc.position(view.id, offset_encoding);
-    let future = language_server
-        .text_document_document_highlight(doc.identifier(), pos, None)
-        .unwrap();
+    let text = doc.text().clone();
+    let mut futures: FuturesOrdered<_> = doc
+        .language_servers_with_feature(LanguageServerFeature::DocumentHighlight)
+        .map(|language_server| {
+            let offset_encoding = language_server.offset_encoding();
+            let pos = doc.position(view.id, offset_encoding);
+            let future = language_server
+                .text_document_document_highlight(doc.identifier(), pos, None)
+                .unwrap();
+            async move { anyhow::Ok((future.await?, offset_encoding)) }
+        })
+        .collect();
 
-    cx.callback(
-        future,
-        move |editor, _compositor, response: Option<Vec<lsp::DocumentHighlight>>| {
-            let document_highlights = match response {
-                Some(highlights) if !highlights.is_empty() => highlights,
-                _ => return,
-            };
+    if futures.is_empty() {
+        cx.editor
+            .set_error("No configured language server supports document-highlights");
+        return;
+    }
+
+    cx.jobs.callback(async move {
+        let mut ranges = Vec::new();
+        while let Some(response) = futures.next().await {
+            match response {
+                Ok((Some(highlights), offset_encoding)) => {
+                    let mut text_ranges: Vec<_> = highlights
+                        .into_iter()
+                        .filter_map(|highlight| {
+                            lsp_range_to_range(&text, highlight.range, offset_encoding)
+                        })
+                        .collect();
+                    ranges.append(&mut text_ranges);
+                }
+                Ok((None, _)) => {}
+                Err(err) => log::error!("document highlight request failed: {err}"),
+            }
+        }
+
+        let call = move |editor: &mut Editor, _compositor: &mut Compositor| {
+            if ranges.is_empty() {
+                return;
+            }
+
             let (view, doc) = current!(editor);
             let text = doc.text();
             let pos = doc.selection(view.id).primary().cursor(text.slice(..));
 
-            // We must find the range that contains our primary cursor to prevent our primary cursor to move
-            let mut primary_index = 0;
-            let ranges = document_highlights
+            ranges.sort_by_key(|range| (range.from(), range.to()));
+            ranges.dedup();
+
+            // Keep the primary cursor on the range that currently contains it when possible.
+            let primary_index = ranges
                 .iter()
-                .filter_map(|highlight| lsp_range_to_range(text, highlight.range, offset_encoding))
-                .enumerate()
-                .map(|(i, range)| {
-                    if range.contains(pos) {
-                        primary_index = i;
-                    }
-                    range
-                })
-                .collect();
-            let selection = Selection::new(ranges, primary_index);
+                .position(|range| range.contains(pos))
+                .unwrap_or(0);
+            let selection = Selection::new(ranges.into(), primary_index);
             doc.set_selection(view.id, selection);
-        },
-    );
+        };
+
+        Ok(Callback::EditorCompositor(Box::new(call)))
+    });
 }
 
 pub fn compute_inlay_hints_for_all_views(editor: &mut Editor, jobs: &mut crate::job::Jobs) {
@@ -1292,10 +1316,6 @@ fn compute_inlay_hints_for_view(
 ) -> Option<std::pin::Pin<Box<impl Future<Output = Result<crate::job::Callback, anyhow::Error>>>>> {
     let view_id = view.id;
     let doc_id = view.doc;
-
-    let language_server = doc
-        .language_servers_with_feature(LanguageServerFeature::InlayHints)
-        .next()?;
 
     let doc_text = doc.text();
     let len_lines = doc_text.len_lines();
@@ -1329,17 +1349,37 @@ fn compute_inlay_hints_for_view(
     let first_char_in_range = doc_slice.line_to_char(first_line);
     let last_char_in_range = doc_slice.line_to_char(last_line);
 
-    let range = helix_lsp::util::range_to_lsp_range(
-        doc_text,
-        helix_core::Range::new(first_char_in_range, last_char_in_range),
-        language_server.offset_encoding(),
-    );
+    let request_range = helix_core::Range::new(first_char_in_range, last_char_in_range);
+    let mut futures: FuturesOrdered<_> = doc
+        .language_servers_with_feature(LanguageServerFeature::InlayHints)
+        .filter_map(|language_server| {
+            let offset_encoding = language_server.offset_encoding();
+            let range =
+                helix_lsp::util::range_to_lsp_range(doc_text, request_range, offset_encoding);
+            let request =
+                language_server.text_document_range_inlay_hints(doc.identifier(), range, None)?;
 
-    let offset_encoding = language_server.offset_encoding();
+            Some(async move { anyhow::Ok((request.await?, offset_encoding)) })
+        })
+        .collect();
 
-    let callback = super::make_job_callback(
-        language_server.text_document_range_inlay_hints(doc.identifier(), range, None)?,
-        move |editor, _compositor, response: Option<Vec<lsp::InlayHint>>| {
+    if futures.is_empty() {
+        return None;
+    }
+
+    Some(Box::pin(async move {
+        let mut responses = Vec::new();
+        while let Some(response) = futures.next().await {
+            match response {
+                Ok((Some(hints), offset_encoding)) if !hints.is_empty() => {
+                    responses.push((hints, offset_encoding));
+                }
+                Ok((Some(_), _)) | Ok((None, _)) => {}
+                Err(err) => log::error!("inlay hints request failed: {err}"),
+            }
+        }
+
+        let call = move |editor: &mut Editor, _compositor: &mut Compositor| {
             // The config was modified or the window was closed while the request was in flight
             if !editor.config().lsp.display_inlay_hints || editor.tree.try_get(view_id).is_none() {
                 return;
@@ -1352,21 +1392,14 @@ fn compute_inlay_hints_for_view(
             };
 
             // If we have neither hints nor an LSP, empty the inlay hints since they're now oudated
-            let mut hints = match response {
-                Some(hints) if !hints.is_empty() => hints,
-                _ => {
-                    doc.set_inlay_hints(
-                        view_id,
-                        DocumentInlayHints::empty_with_id(new_doc_inlay_hints_id),
-                    );
-                    doc.inlay_hints_oudated = false;
-                    return;
-                }
-            };
-
-            // Most language servers will already send them sorted but ensure this is the case to
-            // avoid errors on our end.
-            hints.sort_by_key(|inlay_hint| inlay_hint.position);
+            if responses.is_empty() {
+                doc.set_inlay_hints(
+                    view_id,
+                    DocumentInlayHints::empty_with_id(new_doc_inlay_hints_id),
+                );
+                doc.inlay_hints_oudated = false;
+                return;
+            }
 
             let mut padding_before_inlay_hints = Vec::new();
             let mut type_inlay_hints = Vec::new();
@@ -1377,67 +1410,81 @@ fn compute_inlay_hints_for_view(
             let doc_text = doc.text();
             let inlay_hints_length_limit = doc.config.load().lsp.inlay_hints_length_limit;
 
-            for hint in hints {
-                let char_idx =
-                    match helix_lsp::util::lsp_pos_to_pos(doc_text, hint.position, offset_encoding)
-                    {
+            for (mut hints, offset_encoding) in responses {
+                // Most language servers will already send them sorted but ensure this is the case
+                // to avoid errors on our end.
+                hints.sort_by_key(|inlay_hint| inlay_hint.position);
+
+                for hint in hints {
+                    let char_idx = match helix_lsp::util::lsp_pos_to_pos(
+                        doc_text,
+                        hint.position,
+                        offset_encoding,
+                    ) {
                         Some(pos) => pos,
                         // Skip inlay hints that have no "real" position
                         None => continue,
                     };
 
-                let mut label = match hint.label {
-                    lsp::InlayHintLabel::String(s) => s,
-                    lsp::InlayHintLabel::LabelParts(parts) => parts
-                        .into_iter()
-                        .map(|p| p.value)
-                        .collect::<Vec<_>>()
-                        .join(""),
-                };
-                // Truncate the hint if too long
-                if let Some(limit) = inlay_hints_length_limit {
-                    // Limit on displayed width
-                    use helix_core::unicode::{
-                        segmentation::UnicodeSegmentation, width::UnicodeWidthStr,
+                    let mut label = match hint.label {
+                        lsp::InlayHintLabel::String(s) => s,
+                        lsp::InlayHintLabel::LabelParts(parts) => parts
+                            .into_iter()
+                            .map(|p| p.value)
+                            .collect::<Vec<_>>()
+                            .join(""),
+                    };
+                    // Truncate the hint if too long
+                    if let Some(limit) = inlay_hints_length_limit {
+                        // Limit on displayed width
+                        use helix_core::unicode::{
+                            segmentation::UnicodeSegmentation, width::UnicodeWidthStr,
+                        };
+
+                        let width = label.width();
+                        let limit = limit.get().into();
+                        if width > limit {
+                            let mut floor_boundary = 0;
+                            let mut acc = 0;
+                            for (i, grapheme_cluster) in label.grapheme_indices(true) {
+                                acc += grapheme_cluster.width();
+
+                                if acc > limit {
+                                    floor_boundary = i;
+                                    break;
+                                }
+                            }
+
+                            label.truncate(floor_boundary);
+                            label.push('…');
+                        }
+                    }
+
+                    let inlay_hints_vec = match hint.kind {
+                        Some(lsp::InlayHintKind::TYPE) => &mut type_inlay_hints,
+                        Some(lsp::InlayHintKind::PARAMETER) => &mut parameter_inlay_hints,
+                        // We can't warn on unknown kind here since LSPs are free to set it or not, for
+                        // example Rust Analyzer does not: every kind will be `None`.
+                        _ => &mut other_inlay_hints,
                     };
 
-                    let width = label.width();
-                    let limit = limit.get().into();
-                    if width > limit {
-                        let mut floor_boundary = 0;
-                        let mut acc = 0;
-                        for (i, grapheme_cluster) in label.grapheme_indices(true) {
-                            acc += grapheme_cluster.width();
+                    if let Some(true) = hint.padding_left {
+                        padding_before_inlay_hints.push(InlineAnnotation::new(char_idx, " "));
+                    }
 
-                            if acc > limit {
-                                floor_boundary = i;
-                                break;
-                            }
-                        }
+                    inlay_hints_vec.push(InlineAnnotation::new(char_idx, label));
 
-                        label.truncate(floor_boundary);
-                        label.push('…');
+                    if let Some(true) = hint.padding_right {
+                        padding_after_inlay_hints.push(InlineAnnotation::new(char_idx, " "));
                     }
                 }
-
-                let inlay_hints_vec = match hint.kind {
-                    Some(lsp::InlayHintKind::TYPE) => &mut type_inlay_hints,
-                    Some(lsp::InlayHintKind::PARAMETER) => &mut parameter_inlay_hints,
-                    // We can't warn on unknown kind here since LSPs are free to set it or not, for
-                    // example Rust Analyzer does not: every kind will be `None`.
-                    _ => &mut other_inlay_hints,
-                };
-
-                if let Some(true) = hint.padding_left {
-                    padding_before_inlay_hints.push(InlineAnnotation::new(char_idx, " "));
-                }
-
-                inlay_hints_vec.push(InlineAnnotation::new(char_idx, label));
-
-                if let Some(true) = hint.padding_right {
-                    padding_after_inlay_hints.push(InlineAnnotation::new(char_idx, " "));
-                }
             }
+
+            sort_inline_annotations(&mut padding_before_inlay_hints);
+            sort_inline_annotations(&mut type_inlay_hints);
+            sort_inline_annotations(&mut parameter_inlay_hints);
+            sort_inline_annotations(&mut other_inlay_hints);
+            sort_inline_annotations(&mut padding_after_inlay_hints);
 
             doc.set_inlay_hints(
                 view_id,
@@ -1451,8 +1498,17 @@ fn compute_inlay_hints_for_view(
                 },
             );
             doc.inlay_hints_oudated = false;
-        },
-    );
+        };
 
-    Some(callback)
+        Ok(Callback::EditorCompositor(Box::new(call)))
+    }))
+}
+
+fn sort_inline_annotations(annotations: &mut Vec<InlineAnnotation>) {
+    annotations.sort_by(|a, b| {
+        a.char_idx
+            .cmp(&b.char_idx)
+            .then_with(|| a.text.as_str().cmp(b.text.as_str()))
+    });
+    annotations.dedup_by(|a, b| a.char_idx == b.char_idx && a.text == b.text);
 }
