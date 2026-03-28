@@ -1,3 +1,4 @@
+use futures_util::{stream::FuturesOrdered, StreamExt};
 use helix_core::syntax::config::LanguageServerFeature;
 use helix_event::{cancelable_future, register_hook};
 use helix_lsp::{lsp, util::lsp_range_to_range, OffsetEncoding};
@@ -23,39 +24,49 @@ fn request_document_highlights(editor: &mut Editor, doc_id: DocumentId, view_id:
 
     doc.ensure_view_init(view_id);
 
-    let Some(language_server) = doc
+    let mut futures: FuturesOrdered<_> = doc
         .language_servers_with_feature(LanguageServerFeature::DocumentHighlight)
-        .next()
-    else {
+        .filter_map(|language_server| {
+            let offset_encoding = language_server.offset_encoding();
+            let pos = doc.position(view_id, offset_encoding);
+            let future =
+                language_server.text_document_document_highlight(doc.identifier(), pos, None)?;
+            let text = doc.text().clone();
+
+            Some(async move {
+                let response = future.await?;
+                anyhow::Ok(
+                    response
+                        .map(|highlights| {
+                            document_highlight_ranges(&text, offset_encoding, highlights)
+                        })
+                        .unwrap_or_default(),
+                )
+            })
+        })
+        .collect();
+
+    if futures.is_empty() {
         doc.clear_document_highlights(view_id);
         return;
-    };
+    }
 
-    let offset_encoding = language_server.offset_encoding();
-    let pos = doc.position(view_id, offset_encoding);
-    let Some(future) =
-        language_server.text_document_document_highlight(doc.identifier(), pos, None)
-    else {
-        doc.clear_document_highlights(view_id);
-        return;
-    };
-
-    let text = doc.text().clone();
     let cancel = doc.document_highlight_controller(view_id).restart();
 
     tokio::spawn(async move {
-        let response = match cancelable_future(future, &cancel).await {
-            Some(Ok(response)) => response,
-            Some(Err(err)) => {
-                log::error!("document highlight request failed: {err}");
-                return;
+        let mut ranges = Vec::new();
+        loop {
+            match cancelable_future(futures.next(), &cancel).await {
+                Some(Some(Ok(items))) => ranges.extend(items),
+                Some(Some(Err(err))) => {
+                    log::error!("document highlight request failed: {err}");
+                }
+                Some(None) => break,
+                None => return,
             }
-            None => return,
-        };
-
-        let ranges = response
-            .map(|highlights| document_highlight_ranges(&text, offset_encoding, highlights))
-            .unwrap_or_default();
+        }
+        ranges.sort_by(|a, b| (a.start, a.end).cmp(&(b.start, b.end)));
+        ranges.dedup_by(|a, b| a.start == b.start && a.end == b.end);
 
         job::dispatch(move |editor, _| {
             apply_document_highlights(editor, doc_id, view_id, ranges);
