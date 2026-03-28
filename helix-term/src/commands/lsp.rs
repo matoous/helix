@@ -1232,42 +1232,66 @@ pub fn rename_symbol(cx: &mut Context) {
 
 pub fn select_references_to_symbol_under_cursor(cx: &mut Context) {
     let (view, doc) = current!(cx.editor);
-    let language_server =
-        language_server_with_feature!(cx.editor, doc, LanguageServerFeature::DocumentHighlight);
-    let offset_encoding = language_server.offset_encoding();
-    let pos = doc.position(view.id, offset_encoding);
-    let future = language_server
-        .text_document_document_highlight(doc.identifier(), pos, None)
-        .unwrap();
+    let text = doc.text().clone();
+    let mut futures: FuturesOrdered<_> = doc
+        .language_servers_with_feature(LanguageServerFeature::DocumentHighlight)
+        .map(|language_server| {
+            let offset_encoding = language_server.offset_encoding();
+            let pos = doc.position(view.id, offset_encoding);
+            let future = language_server
+                .text_document_document_highlight(doc.identifier(), pos, None)
+                .unwrap();
+            async move { anyhow::Ok((future.await?, offset_encoding)) }
+        })
+        .collect();
 
-    cx.callback(
-        future,
-        move |editor, _compositor, response: Option<Vec<lsp::DocumentHighlight>>| {
-            let document_highlights = match response {
-                Some(highlights) if !highlights.is_empty() => highlights,
-                _ => return,
-            };
+    if futures.is_empty() {
+        cx.editor
+            .set_error("No configured language server supports document-highlights");
+        return;
+    }
+
+    cx.jobs.callback(async move {
+        let mut ranges = Vec::new();
+        while let Some(response) = futures.next().await {
+            match response {
+                Ok((Some(highlights), offset_encoding)) => {
+                    let mut text_ranges: Vec<_> = highlights
+                        .into_iter()
+                        .filter_map(|highlight| {
+                            lsp_range_to_range(&text, highlight.range, offset_encoding)
+                        })
+                        .collect();
+                    ranges.append(&mut text_ranges);
+                }
+                Ok((None, _)) => {}
+                Err(err) => log::error!("document highlight request failed: {err}"),
+            }
+        }
+
+        let call = move |editor: &mut Editor, _compositor: &mut Compositor| {
+            if ranges.is_empty() {
+                return;
+            }
+
             let (view, doc) = current!(editor);
             let text = doc.text();
             let pos = doc.selection(view.id).primary().cursor(text.slice(..));
 
-            // We must find the range that contains our primary cursor to prevent our primary cursor to move
-            let mut primary_index = 0;
-            let ranges = document_highlights
+            ranges.sort_by_key(|range| (range.from(), range.to()));
+            ranges.dedup();
+
+            // Keep the primary cursor on the range that currently contains it when possible.
+            let primary_index = ranges
                 .iter()
-                .filter_map(|highlight| lsp_range_to_range(text, highlight.range, offset_encoding))
-                .enumerate()
-                .map(|(i, range)| {
-                    if range.contains(pos) {
-                        primary_index = i;
-                    }
-                    range
-                })
-                .collect();
-            let selection = Selection::new(ranges, primary_index);
+                .position(|range| range.contains(pos))
+                .unwrap_or(0);
+            let selection = Selection::new(ranges.into(), primary_index);
             doc.set_selection(view.id, selection);
-        },
-    );
+        };
+
+        Ok(Callback::EditorCompositor(Box::new(call)))
+    });
 }
 
 pub fn compute_inlay_hints_for_all_views(editor: &mut Editor, jobs: &mut crate::job::Jobs) {
