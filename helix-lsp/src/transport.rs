@@ -8,6 +8,7 @@ use log::{error, info};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::io::Write as _;
 use std::sync::Arc;
 use tokio::{
     io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader, BufWriter},
@@ -161,40 +162,48 @@ impl Transport {
         &self,
         server_stdin: &mut BufWriter<ChildStdin>,
         payload: Payload,
+        request_buffer: &mut Vec<u8>,
+        header_buffer: &mut Vec<u8>,
     ) -> Result<()> {
-        //TODO: reuse string
-        let json = match payload {
+        request_buffer.clear();
+
+        match payload {
             Payload::Request { chan, value } => {
                 self.pending_requests
                     .lock()
                     .await
                     .insert(value.id.clone(), chan);
-                serde_json::to_string(&value)?
+                serde_json::to_writer(&mut *request_buffer, &value)?;
             }
-            Payload::Notification(value) => serde_json::to_string(&value)?,
-            Payload::Response(error) => serde_json::to_string(&error)?,
-        };
-        self.send_string_to_server(server_stdin, json, &self.name)
+            Payload::Notification(value) => serde_json::to_writer(&mut *request_buffer, &value)?,
+            Payload::Response(error) => serde_json::to_writer(&mut *request_buffer, &error)?,
+        }
+
+        self.send_bytes_to_server(server_stdin, request_buffer, header_buffer, &self.name)
             .await
     }
 
-    async fn send_string_to_server(
+    async fn send_bytes_to_server(
         &self,
         server_stdin: &mut BufWriter<ChildStdin>,
-        request: String,
+        request: &[u8],
+        header_buffer: &mut Vec<u8>,
         language_server_name: &str,
     ) -> Result<()> {
-        info!("{language_server_name} -> {request}");
+        info!(
+            "{language_server_name} -> {}",
+            std::str::from_utf8(request).context("invalid utf8 request payload")?
+        );
+
+        header_buffer.clear();
+        write!(header_buffer, "Content-Length: {}\r\n\r\n", request.len())
+            .expect("writing into Vec cannot fail");
 
         // send the headers
-        server_stdin
-            .write_all(format!("Content-Length: {}\r\n\r\n", request.len()).as_bytes())
-            .await?;
+        server_stdin.write_all(header_buffer).await?;
 
         // send the body
-        server_stdin.write_all(request.as_bytes()).await?;
-
-        server_stdin.flush().await?;
+        server_stdin.write_all(request).await?;
 
         Ok(())
     }
@@ -343,6 +352,8 @@ impl Transport {
         initialize_notify: Arc<Notify>,
     ) {
         let mut pending_messages: Vec<Payload> = Vec::new();
+        let mut request_buffer = Vec::new();
+        let mut header_buffer = Vec::new();
         let mut is_pending = true;
 
         // Determine if a message is allowed to be sent early
@@ -395,35 +406,72 @@ impl Transport {
                     }
 
                     // drain the pending queue and send payloads to server
+                    let mut wrote_messages = false;
                     for msg in pending_messages.drain(..) {
                         log::info!("Draining pending message {:?}", msg);
-                        match transport.send_payload_to_server(&mut server_stdin, msg).await {
+                        match transport
+                            .send_payload_to_server(
+                                &mut server_stdin,
+                                msg,
+                                &mut request_buffer,
+                                &mut header_buffer,
+                            )
+                            .await
+                        {
                             Ok(_) => {}
                             Err(err) => {
                                 error!("{language_server_name} err: <- {err:?}");
                             }
                         }
+                        wrote_messages = true;
+                    }
+                    if wrote_messages {
+                        if let Err(err) = server_stdin.flush().await {
+                            error!("{language_server_name} err: <- {err:?}");
+                        }
                     }
                 }
                 msg = client_rx.recv() => {
                     if let Some(msg) = msg {
-                        if is_pending && is_shutdown(&msg) {
-                            log::info!("Language server not initialized, shutting down");
-                            break;
-                        } else if is_pending && !is_initialize(&msg) {
-                            // ignore notifications
-                            if let Payload::Notification(_) = msg {
-                                continue;
+                        let mut wrote_messages = false;
+                        let mut next_msg = Some(msg);
+
+                        while let Some(msg) = next_msg.take() {
+                            if is_pending && is_shutdown(&msg) {
+                                log::info!("Language server not initialized, shutting down");
+                                return;
+                            } else if is_pending && !is_initialize(&msg) {
+                                // ignore notifications
+                                if let Payload::Notification(_) = msg {
+                                    next_msg = client_rx.try_recv().ok();
+                                    continue;
+                                }
+
+                                log::info!("Language server not initialized, delaying request");
+                                pending_messages.push(msg);
+                            } else {
+                                match transport
+                                    .send_payload_to_server(
+                                        &mut server_stdin,
+                                        msg,
+                                        &mut request_buffer,
+                                        &mut header_buffer,
+                                    )
+                                    .await
+                                {
+                                    Ok(_) => wrote_messages = true,
+                                    Err(err) => {
+                                        error!("{} err: <- {err:?}", transport.name);
+                                    }
+                                }
                             }
 
-                            log::info!("Language server not initialized, delaying request");
-                            pending_messages.push(msg);
-                        } else {
-                            match transport.send_payload_to_server(&mut server_stdin, msg).await {
-                                Ok(_) => {}
-                                Err(err) => {
-                                    error!("{} err: <- {err:?}", transport.name);
-                                }
+                            next_msg = client_rx.try_recv().ok();
+                        }
+
+                        if wrote_messages {
+                            if let Err(err) = server_stdin.flush().await {
+                                error!("{} err: <- {err:?}", transport.name);
                             }
                         }
                     } else {
