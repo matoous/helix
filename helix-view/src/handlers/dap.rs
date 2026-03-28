@@ -3,6 +3,7 @@ use crate::{align_view, Align, Editor};
 use anyhow::bail;
 use dap::requests::DisconnectArguments;
 use dap::requests::ThreadsArguments;
+use futures_util::stream::{FuturesUnordered, StreamExt};
 use helix_core::Selection;
 use helix_dap::{
     self as dap, registry::DebugAdapterId, Client, ConnectionType, Payload, Request, ThreadId,
@@ -40,7 +41,9 @@ pub async fn select_thread_id(editor: &mut Editor, thread_id: ThreadId, force: b
     }
 
     debugger.thread_id = Some(thread_id);
-    fetch_stack_trace(debugger, thread_id).await;
+    if !debugger.stack_frames.contains_key(&thread_id) {
+        fetch_stack_trace(debugger, thread_id).await;
+    }
 
     let frame = debugger.stack_frames[&thread_id].first().cloned();
     if let Some(frame) = &frame {
@@ -173,24 +176,61 @@ impl Editor {
                         all_threads_stopped,
                         ..
                     }) => {
-                        let debugger = match self.debug_adapters.get_client_mut(id) {
-                            Some(debugger) => debugger,
-                            None => return false,
-                        };
-
                         let all_threads_stopped = all_threads_stopped.unwrap_or_default();
 
                         if all_threads_stopped {
-                            if let Ok(response) = debugger
-                                .request::<dap::requests::Threads>(Some(ThreadsArguments {}))
-                                .await
-                            {
-                                for thread in response.threads {
-                                    fetch_stack_trace(debugger, thread.id).await;
+                            let response = {
+                                let debugger = match self.debug_adapters.get_client(id) {
+                                    Some(debugger) => debugger,
+                                    None => return false,
+                                };
+                                debugger
+                                    .request::<dap::requests::Threads>(Some(ThreadsArguments {}))
+                                    .await
+                            };
+
+                            if let Ok(response) = response {
+                                let stack_trace_results = {
+                                    let debugger = match self.debug_adapters.get_client(id) {
+                                        Some(debugger) => debugger,
+                                        None => return false,
+                                    };
+                                    let mut stack_traces = FuturesUnordered::new();
+                                    for thread in response.threads {
+                                        let future = debugger.stack_trace(thread.id);
+                                        stack_traces.push(async move {
+                                            future.await.map(|(frames, _)| (thread.id, frames))
+                                        });
+                                    }
+
+                                    let mut results = Vec::new();
+                                    while let Some(result) = stack_traces.next().await {
+                                        results.push(result);
+                                    }
+                                    results
+                                };
+
+                                let debugger = match self.debug_adapters.get_client_mut(id) {
+                                    Some(debugger) => debugger,
+                                    None => return false,
+                                };
+                                for result in stack_trace_results {
+                                    match result {
+                                        Ok((thread_id, frames)) => {
+                                            debugger.stack_frames.insert(thread_id, frames);
+                                        }
+                                        Err(err) => {
+                                            log::warn!("failed to fetch stack trace: {err}")
+                                        }
+                                    }
                                 }
                                 select_thread_id(self, thread_id.unwrap_or_default(), false).await;
                             }
                         } else if let Some(thread_id) = thread_id {
+                            let debugger = match self.debug_adapters.get_client_mut(id) {
+                                Some(debugger) => debugger,
+                                None => return false,
+                            };
                             debugger.thread_states.insert(thread_id, reason.clone()); // TODO: dap uses "type" || "reason" here
 
                             fetch_stack_trace(debugger, thread_id).await;
