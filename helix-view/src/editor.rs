@@ -1193,6 +1193,7 @@ pub struct Editor {
     pub tree: Tree,
     pub next_document_id: DocumentId,
     pub documents: BTreeMap<DocumentId, Document>,
+    document_ids_by_path: HashMap<PathBuf, DocumentId>,
 
     // We Flatten<> to resolve the inner DocumentSavedEventFuture. For that we need a stream of streams, hence the Once<>.
     // https://stackoverflow.com/a/66875668
@@ -1345,6 +1346,7 @@ impl Editor {
             tree: Tree::new(area),
             next_document_id: DocumentId::default(),
             documents: BTreeMap::new(),
+            document_ids_by_path: HashMap::new(),
             saves: HashMap::new(),
             save_queue: SelectAll::new(),
             write_count: 0,
@@ -1599,10 +1601,11 @@ impl Editor {
     }
 
     pub fn set_doc_path(&mut self, doc_id: DocumentId, path: &Path) {
+        let path = helix_stdx::path::canonicalize(path);
         let doc = doc_mut!(self, &doc_id);
-        let old_path = doc.path();
+        let old_path = doc.path().map(PathBuf::from);
 
-        if let Some(old_path) = old_path {
+        if let Some(old_path) = old_path.as_deref() {
             // sanity check, should not occur but some callers (like an LSP) may
             // create bogus calls
             if old_path == path {
@@ -1618,7 +1621,11 @@ impl Editor {
         // text_document_did_close. Since we called `text_document_did_close`
         // we have fully unregistered this document from its LS
         doc.language_servers.clear();
-        doc.set_path(Some(path));
+        doc.set_path(Some(&path));
+        if let Some(old_path) = old_path {
+            self.document_ids_by_path.remove(&old_path);
+        }
+        self.document_ids_by_path.insert(path, doc_id);
         doc.detect_editor_config();
         self.refresh_doc_language(doc_id)
     }
@@ -1877,6 +1884,9 @@ impl Editor {
         self.next_document_id =
             DocumentId(unsafe { NonZeroUsize::new_unchecked(self.next_document_id.0.get() + 1) });
         doc.id = id;
+        if let Some(path) = doc.path().map(PathBuf::from) {
+            self.document_ids_by_path.insert(path, id);
+        }
         self.documents.insert(id, doc);
 
         let (save_sender, save_receiver) = tokio::sync::mpsc::unbounded_channel();
@@ -2024,6 +2034,9 @@ impl Editor {
         }
 
         let doc = self.documents.remove(&doc_id).unwrap();
+        if let Some(path) = doc.path().map(PathBuf::from) {
+            self.document_ids_by_path.remove(&path);
+        }
 
         // If the document we removed was visible in all views, we will have no more views. We don't
         // want to close the editor just for a simple buffer close, so we need to create a new view
@@ -2178,13 +2191,13 @@ impl Editor {
     }
 
     pub fn document_by_path<P: AsRef<Path>>(&self, path: P) -> Option<&Document> {
-        self.documents()
-            .find(|doc| doc.path().map(|p| p == path.as_ref()).unwrap_or(false))
+        let doc_id = *self.document_ids_by_path.get(path.as_ref())?;
+        self.document(doc_id)
     }
 
     pub fn document_by_path_mut<P: AsRef<Path>>(&mut self, path: P) -> Option<&mut Document> {
-        self.documents_mut()
-            .find(|doc| doc.path().map(|p| p == path.as_ref()).unwrap_or(false))
+        let doc_id = *self.document_ids_by_path.get(path.as_ref())?;
+        self.document_mut(doc_id)
     }
 
     /// Returns all supported diagnostics for the document
