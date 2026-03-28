@@ -371,6 +371,8 @@ impl MappableCommand {
         select_regex, "Select all regex matches inside selections",
         split_selection, "Split selections on regex matches",
         split_selection_on_newline, "Split selection on newlines",
+        subselect_textobject_around, "Split selections into matching textobjects including separators",
+        subselect_textobject_inner, "Split selections into matching textobjects",
         merge_selections, "Merge selections",
         merge_consecutive_selections, "Merge consecutive selections",
         search, "Search for regex pattern",
@@ -6156,12 +6158,93 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         }
     });
 
-    let title = match objtype {
+    cx.editor.autoinfo = Some(Info::new(
+        textobject_title(objtype),
+        &textobject_help_text(),
+    ));
+}
+
+fn subselect_textobject_around(cx: &mut Context) {
+    subselect_textobject(cx, textobject::TextObject::Around);
+}
+
+fn subselect_textobject_inner(cx: &mut Context) {
+    subselect_textobject(cx, textobject::TextObject::Inside);
+}
+
+fn subselect_textobject(cx: &mut Context, objtype: textobject::TextObject) {
+    cx.on_next_key(move |cx, event| {
+        cx.editor.autoinfo = None;
+        if let Some(ch) = event.char() {
+            let subselect = move |editor: &mut Editor| {
+                let (view, doc) = current!(editor);
+                let selection = doc.selection(view.id).clone();
+                let selection = match ch {
+                    't' | 'f' | 'a' | 'c' | 'T' | 'e' | 'x' => {
+                        let Some(syntax) = doc.syntax() else {
+                            editor.set_error("textobjects are not available in current buffer");
+                            return;
+                        };
+                        let loader = editor.syn_loader.load();
+                        let object_name = match ch {
+                            't' => "class",
+                            'f' => "function",
+                            'a' => "parameter",
+                            'c' => "comment",
+                            'T' => "test",
+                            'e' => "entry",
+                            'x' => "xml-element",
+                            _ => unreachable!(),
+                        };
+
+                        selection::select_ranges(&selection, |range, ranges| {
+                            ranges.extend(textobject::textobject_treesitter_subranges(
+                                doc.text().slice(..),
+                                range,
+                                objtype,
+                                object_name,
+                                syntax,
+                                &loader,
+                            ));
+                        })
+                    }
+                    'd' => selection::select_ranges(&selection, |range, ranges| {
+                        ranges.extend(doc.diagnostics().iter().filter_map(|diagnostic| {
+                            let diagnostic_range =
+                                Range::new(diagnostic.range.start, diagnostic.range.end);
+                            range
+                                .contains_range(&diagnostic_range)
+                                .then_some(diagnostic_range)
+                        }));
+                    }),
+                    _ => return,
+                };
+
+                match selection {
+                    Some(selection) => doc.set_selection(view.id, selection),
+                    None => editor.set_error("nothing selected"),
+                }
+            };
+            cx.editor.apply_motion(subselect);
+        }
+    });
+
+    cx.editor.autoinfo = Some(Info::new(
+        subselect_textobject_title(objtype),
+        &subselect_textobject_help_text(),
+    ));
+}
+
+fn textobject_title(objtype: textobject::TextObject) -> &'static str {
+    match objtype {
         textobject::TextObject::Inside => "Match inside",
         textobject::TextObject::Around => "Match around",
-        _ => return,
-    };
-    let help_text = [
+        textobject::TextObject::Movement => unreachable!(),
+    }
+}
+
+fn textobject_help_text() -> Vec<(&'static str, &'static str)> {
+    vec![
         ("w", "Word"),
         ("W", "WORD"),
         ("p", "Paragraph"),
@@ -6175,9 +6258,28 @@ fn select_textobject(cx: &mut Context, objtype: textobject::TextObject) {
         ("g", "Change"),
         ("x", "(X)HTML element (tree-sitter)"),
         (" ", "... or any character acting as a pair"),
-    ];
+    ]
+}
 
-    cx.editor.autoinfo = Some(Info::new(title, &help_text));
+fn subselect_textobject_title(objtype: textobject::TextObject) -> &'static str {
+    match objtype {
+        textobject::TextObject::Inside => "Subselect inside",
+        textobject::TextObject::Around => "Subselect around",
+        textobject::TextObject::Movement => unreachable!(),
+    }
+}
+
+fn subselect_textobject_help_text() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("t", "Type definition (tree-sitter)"),
+        ("f", "Function (tree-sitter)"),
+        ("a", "Argument/parameter (tree-sitter)"),
+        ("c", "Comment (tree-sitter)"),
+        ("T", "Test (tree-sitter)"),
+        ("e", "Data structure entry (tree-sitter)"),
+        ("x", "(X)HTML element (tree-sitter)"),
+        ("d", "Diagnostic"),
+    ]
 }
 
 static SURROUND_HELP_TEXT: [(&str, &str); 6] = [

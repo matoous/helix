@@ -1,3 +1,4 @@
+use std::cmp::Reverse;
 use std::fmt::Display;
 
 use ropey::RopeSlice;
@@ -8,7 +9,7 @@ use crate::line_ending::rope_is_line_ending;
 use crate::movement::Direction;
 use crate::syntax;
 use crate::Range;
-use crate::{surround, Syntax};
+use crate::{surround, SmallVec, Syntax};
 
 fn find_word_boundary(slice: RopeSlice, mut pos: usize, direction: Direction, long: bool) -> usize {
     use CharCategory::{Eol, Whitespace};
@@ -289,13 +290,74 @@ pub fn textobject_treesitter(
     get_range().unwrap_or(range)
 }
 
+pub fn textobject_treesitter_subranges(
+    slice: RopeSlice,
+    range: Range,
+    textobject: TextObject,
+    object_name: &str,
+    syntax: &Syntax,
+    loader: &syntax::Loader,
+) -> SmallVec<[Range; 1]> {
+    let root = syntax.tree().root_node();
+    let textobject_query = loader.textobject_query(syntax.root_language());
+    let selection_start = slice.char_to_byte(range.from());
+    let selection_end = slice.char_to_byte(range.to());
+
+    let mut ranges: SmallVec<[Range; 1]> = textobject_query
+        .and_then(|query| {
+            let capture_name = format!("{}.{}", object_name, textobject);
+            query.capture_nodes(&capture_name, &root, slice)
+        })
+        .into_iter()
+        .flatten()
+        .filter_map(|node| {
+            let byte_range = node.byte_range();
+
+            if byte_range.start < selection_start || byte_range.end > selection_end {
+                return None;
+            }
+
+            let len = slice.len_bytes();
+            if byte_range.start > len || byte_range.end > len {
+                return None;
+            }
+
+            Some(Range::new(
+                slice.byte_to_char(byte_range.start),
+                slice.byte_to_char(byte_range.end),
+            ))
+        })
+        .collect();
+
+    ranges.sort_unstable_by_key(|range| (range.from(), Reverse(range.to())));
+    ranges.dedup();
+
+    let mut top_level_ranges = SmallVec::with_capacity(ranges.len());
+    for range in ranges {
+        if top_level_ranges
+            .last()
+            .is_some_and(|parent: &Range| parent.contains_range(&range))
+        {
+            continue;
+        }
+        top_level_ranges.push(range);
+    }
+
+    top_level_ranges.sort_unstable_by_key(|range| (range.from(), range.to()));
+    top_level_ranges
+}
+
 #[cfg(test)]
 mod test {
     use super::TextObject::*;
     use super::*;
 
+    use crate::config::default_lang_loader;
     use crate::Range;
+    use once_cell::sync::Lazy;
     use ropey::Rope;
+
+    static LOADER: Lazy<syntax::Loader> = Lazy::new(default_lang_loader);
 
     #[test]
     fn test_textobject_word() {
@@ -586,5 +648,61 @@ mod test {
                 );
             }
         }
+    }
+
+    #[test]
+    fn test_textobject_treesitter_subranges() {
+        let source = Rope::from_str("fn demo(alpha: usize, beta: usize) {}\n");
+        let syntax = Syntax::new(
+            source.slice(..),
+            LOADER.language_for_name("rust").unwrap(),
+            &LOADER,
+        )
+        .unwrap();
+
+        let ranges = textobject_treesitter_subranges(
+            source.slice(..),
+            Range::new(0, source.len_chars()),
+            Inside,
+            "parameter",
+            &syntax,
+            &LOADER,
+        );
+
+        let fragments: Vec<_> = ranges
+            .iter()
+            .map(|range| source.slice(range.from()..range.to()).to_string())
+            .collect();
+
+        assert_eq!(fragments, ["alpha: usize", "beta: usize"]);
+    }
+
+    #[test]
+    fn test_textobject_treesitter_subranges_skip_nested_parameter_captures() {
+        let source = Rope::from_str(
+            "fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {}\n",
+        );
+        let syntax = Syntax::new(
+            source.slice(..),
+            LOADER.language_for_name("rust").unwrap(),
+            &LOADER,
+        )
+        .unwrap();
+
+        let ranges = textobject_treesitter_subranges(
+            source.slice(..),
+            Range::new(0, source.len_chars()),
+            Inside,
+            "parameter",
+            &syntax,
+            &LOADER,
+        );
+
+        let fragments: Vec<_> = ranges
+            .iter()
+            .map(|range| source.slice(range.from()..range.to()).to_string())
+            .collect();
+
+        assert_eq!(fragments, ["&self", "f: &mut std::fmt::Formatter<'_>"]);
     }
 }

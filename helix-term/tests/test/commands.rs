@@ -1,3 +1,4 @@
+use helix_core::diagnostic::{Diagnostic, DiagnosticProvider, LanguageServerId, Severity};
 use helix_term::application::Application;
 
 use super::*;
@@ -269,6 +270,140 @@ async fn test_multi_selection_shell_commands() -> anyhow::Result<()> {
             dolor#(|foo)#
             "},
     ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_subselect_textobject_parameters() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                #[fn demo(alpha: usize, beta: usize) {|]#}
+                "},
+            "mIa",
+            indoc! {"\
+                fn demo(#[alpha: usize|]#, #(beta: usize|)#) {}
+                "},
+        ),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_subselect_textobject_parameters_after_surround_selection() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                fn fmt(&self, #[f: &mut std::fmt::Formatter<'_>|]#) -> std::fmt::Result {}
+                "},
+            "ma(mIa",
+            indoc! {"\
+                fn fmt(#[&self|]#, #(f: &mut std::fmt::Formatter<'_>|)#) -> std::fmt::Result {}
+                "},
+        ),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_subselect_textobject_parameters_in_incomplete_rust_signature() -> anyhow::Result<()> {
+    test_with_config(
+        AppBuilder::new().with_file("foo.rs", None),
+        (
+            indoc! {"\
+                fn fmt(&self, #[f: &mut std::fmt::Formatter<'_>|]#) -> std::fmt::Result {
+                "},
+            "ma(mIa",
+            indoc! {"\
+                fn fmt(#[&self|]#, #(f: &mut std::fmt::Formatter<'_>|)#) -> std::fmt::Result {
+                "},
+        ),
+    )
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_subselect_diagnostics() -> anyhow::Result<()> {
+    let mut app = AppBuilder::new()
+        .with_file("foo.rs", None)
+        .with_input_text(indoc! {"\
+            #[|]#fn demo() {
+                alpha();
+                beta();
+            }
+        "})
+        .build()?;
+
+    let (view, doc) = helix_view::current!(app.editor);
+    doc.replace_diagnostics(
+        [
+            Diagnostic {
+                range: helix_stdx::range::Range { start: 16, end: 21 },
+                ends_at_word: true,
+                starts_at_word: true,
+                zero_width: false,
+                line: 1,
+                message: "alpha".into(),
+                severity: Some(Severity::Error),
+                code: None,
+                provider: DiagnosticProvider::Lsp {
+                    server_id: LanguageServerId::default(),
+                    identifier: None,
+                },
+                tags: Vec::new(),
+                source: None,
+                data: None,
+            },
+            Diagnostic {
+                range: helix_stdx::range::Range { start: 29, end: 33 },
+                ends_at_word: true,
+                starts_at_word: true,
+                zero_width: false,
+                line: 2,
+                message: "beta".into(),
+                severity: Some(Severity::Warning),
+                code: None,
+                provider: DiagnosticProvider::Lsp {
+                    server_id: LanguageServerId::default(),
+                    identifier: None,
+                },
+                tags: Vec::new(),
+                source: None,
+                data: None,
+            },
+        ],
+        &[],
+        None,
+    );
+    doc.set_selection(view.id, Selection::single(0, doc.text().len_chars()));
+
+    test_key_sequence(
+        &mut app,
+        Some("mId"),
+        Some(&|app| {
+            let (view, doc) = helix_view::current_ref!(app.editor);
+            assert_eq!(
+                helix_core::test::plain(doc.text().slice(..), doc.selection(view.id)),
+                indoc! {"\
+                    fn demo() {
+                        #[alpha|]#();
+                        #(beta|)#();
+                    }
+                "}
+            );
+        }),
+        false,
+    )
     .await?;
 
     Ok(())

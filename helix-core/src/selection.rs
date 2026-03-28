@@ -783,6 +783,23 @@ pub fn keep_or_remove_matches(
     None
 }
 
+pub fn select_ranges(
+    selection: &Selection,
+    mut select: impl FnMut(Range, &mut SmallVec<[Range; 1]>),
+) -> Option<Selection> {
+    let mut result = SmallVec::with_capacity(selection.len());
+
+    for range in selection {
+        select(*range, &mut result);
+    }
+
+    if !result.is_empty() {
+        return Some(Selection::new(result, 0));
+    }
+
+    None
+}
+
 // TODO: support to split on capture #N instead of whole match
 pub fn select_on_matches(
     text: RopeSlice,
