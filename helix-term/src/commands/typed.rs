@@ -2453,22 +2453,26 @@ fn sort(cx: &mut compositor::Context, args: Args, event: PromptEvent) -> anyhow:
         .map(|fragment| fragment.chunks().collect())
         .collect();
 
-    fragments.sort_by(
-        match (args.has_flag("insensitive"), args.has_flag("reverse")) {
-            (true, true) => |a: &Tendril, b: &Tendril| b.to_lowercase().cmp(&a.to_lowercase()),
-            (true, false) => |a: &Tendril, b: &Tendril| a.to_lowercase().cmp(&b.to_lowercase()),
-            (false, true) => |a: &Tendril, b: &Tendril| b.cmp(a),
-            (false, false) => |a: &Tendril, b: &Tendril| a.cmp(b),
-        },
-    );
+    let insensitive = args.has_flag("insensitive");
+    fragments.sort_by(match (insensitive, args.has_flag("reverse")) {
+        (true, true) => |a: &Tendril, b: &Tendril| b.to_lowercase().cmp(&a.to_lowercase()),
+        (true, false) => |a: &Tendril, b: &Tendril| a.to_lowercase().cmp(&b.to_lowercase()),
+        (false, true) => |a: &Tendril, b: &Tendril| b.cmp(a),
+        (false, false) => |a: &Tendril, b: &Tendril| a.cmp(b),
+    });
 
-    let transaction = Transaction::change(
-        doc.text(),
-        selection
-            .into_iter()
-            .zip(fragments)
-            .map(|(s, fragment)| (s.from(), s.to(), Some(fragment))),
-    );
+    if args.has_flag("unique") {
+        if insensitive {
+            fragments.dedup_by_key(|fragment| fragment.to_lowercase());
+        } else {
+            fragments.dedup();
+        }
+    }
+
+    let mut fragments = fragments.into_iter();
+    let transaction = Transaction::change_by_and_with_selection(doc.text(), selection, |range| {
+        ((range.from(), range.to(), fragments.next()), None)
+    });
 
     doc.apply(&transaction, view.id);
     doc.append_changes_to_history(view);
@@ -3862,6 +3866,12 @@ pub const TYPABLE_COMMAND_LIST: &[TypableCommand] = &[
                     name: "reverse",
                     alias: Some('r'),
                     doc: "sort ranges in reverse order",
+                    ..Flag::DEFAULT
+                },
+                Flag {
+                    name: "unique",
+                    alias: Some('u'),
+                    doc: "remove duplicate ranges after sorting",
                     ..Flag::DEFAULT
                 },
             ],

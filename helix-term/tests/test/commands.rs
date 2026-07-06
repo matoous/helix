@@ -1,4 +1,5 @@
 use helix_term::application::Application;
+use helix_view::doc;
 
 use super::*;
 
@@ -269,6 +270,45 @@ async fn test_multi_selection_shell_commands() -> anyhow::Result<()> {
             dolor#(|foo)#
             "},
     ))
+    .await?;
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_sort_unique() -> anyhow::Result<()> {
+    helpers::test_key_sequence_with_input_text(
+        None,
+        (
+            indoc! {"\
+            #(beta\n|)##(alpha\n|)##(beta\n|)##[beta\n|]##(gamma\n|)#"},
+            ":sort -u<ret>",
+            "#[|]#",
+            LineFeedHandling::AsIs,
+        ),
+        &|app| {
+            let doc = doc!(app.editor);
+            assert_eq!("alpha\nbeta\ngamma\n", doc.text().to_string());
+        },
+        false,
+    )
+    .await?;
+
+    helpers::test_key_sequence_with_input_text(
+        None,
+        (
+            indoc! {"\
+            #(beta\n|)##(alpha\n|)##(beta\n|)##[beta\n|]##(gamma\n|)#"},
+            ":sort --unique<ret>",
+            "#[|]#",
+            LineFeedHandling::AsIs,
+        ),
+        &|app| {
+            let doc = doc!(app.editor);
+            assert_eq!("alpha\nbeta\ngamma\n", doc.text().to_string());
+        },
+        false,
+    )
     .await?;
 
     Ok(())
