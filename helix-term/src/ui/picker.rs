@@ -31,7 +31,6 @@ use tui::widgets::Widget;
 use std::{
     borrow::Cow,
     collections::HashMap,
-    io::Read,
     path::Path,
     sync::{
         atomic::{self, AtomicUsize},
@@ -52,7 +51,9 @@ use helix_view::{
     Document, DocumentId, Editor,
 };
 
-use self::handlers::{DynamicQueryChange, DynamicQueryHandler, PreviewHighlightHandler};
+use self::handlers::{
+    DynamicQueryChange, DynamicQueryHandler, PreviewHighlightHandler, PreviewLoadHandler,
+};
 
 pub const ID: &str = "picker";
 
@@ -84,6 +85,7 @@ type FileCallback<T> = Box<dyn for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocat
 pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
 
 pub enum CachedPreview {
+    Loading,
     Document(Box<Document>),
     Directory(Vec<(String, bool)>),
     Binary,
@@ -121,6 +123,7 @@ impl Preview<'_, '_> {
             Self::Cached(preview) => match preview {
                 CachedPreview::Document(_) => "<Invalid file location>",
                 CachedPreview::Directory(_) => "<Invalid directory location>",
+                CachedPreview::Loading => "<Loading preview>",
                 CachedPreview::Binary => "<Binary file>",
                 CachedPreview::LargeFile => "<File too large to preview>",
                 CachedPreview::NotFound => "<File not found>",
@@ -263,9 +266,10 @@ pub struct Picker<T: 'static + Send + Sync, D: 'static> {
     pub truncate_start: bool,
     /// Caches paths to documents
     preview_cache: HashMap<Arc<Path>, CachedPreview>,
-    read_buffer: Vec<u8>,
     /// Given an item in the picker, return the file path and line number to display.
     file_fn: Option<FileCallback<T>>,
+    /// An event handler for loading preview contents outside the render path.
+    preview_load_handler: Sender<Arc<Path>>,
     /// An event handler for syntax highlighting the currently previewed file.
     preview_highlight_handler: Sender<Arc<Path>>,
     dynamic_query_handler: Option<Sender<DynamicQueryChange>>,
@@ -390,8 +394,8 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
             completion_height: 0,
             widths,
             preview_cache: HashMap::new(),
-            read_buffer: Vec::with_capacity(1024),
             file_fn: None,
+            preview_load_handler: PreviewLoadHandler::<T, D>::default().spawn(),
             preview_highlight_handler: PreviewHighlightHandler::<T, D>::default().spawn(),
             dynamic_query_handler: None,
         }
@@ -607,70 +611,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                 }
 
                 let path: Arc<Path> = path.into();
-                let preview = std::fs::metadata(&path)
-                    .and_then(|metadata| {
-                        if metadata.is_dir() {
-                            let files = super::directory_content(&path, editor)?;
-                            let file_names: Vec<_> = files
-                                .iter()
-                                .filter_map(|(file_path, is_dir)| {
-                                    let name = file_path
-                                        .strip_prefix(&path)
-                                        .map(|p| Some(p.as_os_str()))
-                                        .unwrap_or_else(|_| file_path.file_name())?
-                                        .to_string_lossy();
-                                    if *is_dir {
-                                        Some((format!("{}/", name), true))
-                                    } else {
-                                        Some((name.into_owned(), false))
-                                    }
-                                })
-                                .collect();
-                            Ok(CachedPreview::Directory(file_names))
-                        } else if metadata.is_file() {
-                            if metadata.len() > MAX_FILE_SIZE_FOR_PREVIEW {
-                                return Ok(CachedPreview::LargeFile);
-                            }
-                            let is_binary = std::fs::File::open(&path).and_then(|file| {
-                                // Read up to 1kb to detect the content type
-                                let n = file.take(1024).read_to_end(&mut self.read_buffer)?;
-                                let is_binary = crate::is_binary(&self.read_buffer[..n]);
-                                self.read_buffer.clear();
-                                Ok(is_binary)
-                            })?;
-                            if is_binary {
-                                return Ok(CachedPreview::Binary);
-                            }
-                            let mut doc = Document::open(
-                                &path,
-                                None,
-                                false,
-                                editor.config.clone(),
-                                editor.syn_loader.clone(),
-                            )
-                            .or(Err(std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "Cannot open document",
-                            )))?;
-                            let loader = editor.syn_loader.load();
-                            if let Some(language_config) = doc.detect_language_config(&loader) {
-                                doc.language = Some(language_config);
-                                // Asynchronously highlight the new document
-                                helix_event::send_blocking(
-                                    &self.preview_highlight_handler,
-                                    path.clone(),
-                                );
-                            }
-                            Ok(CachedPreview::Document(Box::new(doc)))
-                        } else {
-                            Err(std::io::Error::new(
-                                std::io::ErrorKind::NotFound,
-                                "Neither a dir, nor a file",
-                            ))
-                        }
-                    })
-                    .unwrap_or(CachedPreview::NotFound);
-                self.preview_cache.insert(path.clone(), preview);
+                self.preview_cache
+                    .insert(path.clone(), CachedPreview::Loading);
+                helix_event::send_blocking(&self.preview_load_handler, path.clone());
                 Some((Preview::Cached(&self.preview_cache[&path]), range))
             }
             PathOrId::Id(id) => {
