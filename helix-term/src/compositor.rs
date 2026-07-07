@@ -4,7 +4,7 @@
 use helix_core::Position;
 use helix_view::graphics::{CursorKind, Rect};
 
-use tui::buffer::Buffer as Surface;
+use tui::buffer::{Buffer as Surface, Cell};
 
 pub type Callback = Box<dyn FnOnce(&mut Compositor, &mut Context)>;
 pub type SyncCallback = Box<dyn FnOnce(&mut Compositor, &mut Context) + Sync>;
@@ -49,6 +49,14 @@ pub trait Component: Any + AnyComponent {
         true
     }
 
+    /// Region owned by this component when rendered into `area`.
+    ///
+    /// Components that return `None` are treated as transparent or unbounded and
+    /// are rendered directly unless a valid cache already exists.
+    fn render_region(&self, _area: Rect) -> Option<Rect> {
+        None
+    }
+
     /// Render the component onto the provided surface.
     fn render(&mut self, area: Rect, frame: &mut Surface, ctx: &mut Context);
 
@@ -77,16 +85,64 @@ pub trait Component: Any + AnyComponent {
 
 pub struct Compositor {
     layers: Vec<Box<dyn Component>>,
+    layer_caches: Vec<LayerCache>,
     area: Rect,
 
     pub(crate) last_picker: Option<Box<dyn Component>>,
     pub(crate) full_redraw: bool,
 }
 
+#[derive(Default)]
+struct LayerCache {
+    area: Option<Rect>,
+    region: Option<Rect>,
+    cells: Vec<CachedCell>,
+}
+
+struct CachedCell {
+    index: usize,
+    cell: Cell,
+}
+
+impl LayerCache {
+    fn is_valid_for(&self, area: Rect, region: Option<Rect>) -> bool {
+        self.area == Some(area) && self.region == region
+    }
+
+    fn invalidate(&mut self) {
+        self.area = None;
+        self.region = None;
+        self.cells.clear();
+    }
+
+    fn capture(&mut self, area: Rect, region: Rect, surface: &Surface) {
+        self.area = Some(area);
+        self.region = Some(region);
+        self.cells.clear();
+
+        for y in region.top()..region.bottom() {
+            for x in region.left()..region.right() {
+                let index = surface.index_of(x, y);
+                self.cells.push(CachedCell {
+                    index,
+                    cell: surface.content[index].clone(),
+                });
+            }
+        }
+    }
+
+    fn replay(&self, surface: &mut Surface) {
+        for CachedCell { index, cell } in &self.cells {
+            surface.content[*index] = cell.clone();
+        }
+    }
+}
+
 impl Compositor {
     pub fn new(area: Rect) -> Self {
         Self {
             layers: Vec::new(),
+            layer_caches: Vec::new(),
             area,
             last_picker: None,
             full_redraw: false,
@@ -99,6 +155,7 @@ impl Compositor {
 
     pub fn resize(&mut self, area: Rect) {
         self.area = area;
+        self.invalidate_render_cache();
     }
 
     /// Add a layer to be rendered in front of all existing layers.
@@ -112,19 +169,27 @@ impl Compositor {
         // trigger required_size on init
         layer.required_size((size.width, size.height));
         self.layers.push(layer);
+        self.layer_caches.push(LayerCache::default());
     }
 
     /// Replace a component that has the given `id` with the new layer and if
     /// no component is found, push the layer normally.
     pub fn replace_or_push<T: Component>(&mut self, id: &'static str, layer: T) {
-        if let Some(component) = self.find_id(id) {
-            *component = layer;
+        let mut layer = Some(Box::new(layer) as Box<dyn Component>);
+        if let Some(idx) = self
+            .layers
+            .iter()
+            .position(|component| component.id() == Some(id))
+        {
+            self.layers[idx] = layer.take().unwrap();
+            self.layer_caches[idx].invalidate();
         } else {
-            self.push(Box::new(layer))
+            self.push(layer.take().unwrap())
         }
     }
 
     pub fn pop(&mut self) -> Option<Box<dyn Component>> {
+        self.layer_caches.pop();
         self.layers.pop()
     }
 
@@ -133,13 +198,21 @@ impl Compositor {
             .layers
             .iter()
             .position(|layer| layer.id() == Some(id))?;
+        self.layer_caches.remove(idx);
         Some(self.layers.remove(idx))
     }
 
     pub fn remove_type<T: 'static>(&mut self) {
         let type_name = std::any::type_name::<T>();
-        self.layers
-            .retain(|component| component.type_name() != type_name);
+        let mut idx = 0;
+        while idx < self.layers.len() {
+            if self.layers[idx].type_name() == type_name {
+                self.layers.remove(idx);
+                self.layer_caches.remove(idx);
+            } else {
+                idx += 1;
+            }
+        }
     }
     pub fn handle_event(&mut self, event: &Event, cx: &mut Context) -> bool {
         // If it is a key event, a macro is being recorded, and a macro isn't being replayed,
@@ -182,8 +255,23 @@ impl Compositor {
     }
 
     pub fn render(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
-        for layer in &mut self.layers {
-            layer.render(area, surface, cx);
+        if self.area != area {
+            self.area = area;
+            self.invalidate_render_cache();
+        }
+
+        for (layer, cache) in self.layers.iter_mut().zip(self.layer_caches.iter_mut()) {
+            let should_update = layer.should_update();
+            let render_region = layer.render_region(area);
+            if !should_update && cache.is_valid_for(area, render_region) {
+                cache.replay(surface);
+            } else if let Some(region) = render_region {
+                layer.render(area, surface, cx);
+                cache.capture(area, region, surface);
+            } else {
+                cache.invalidate();
+                layer.render(area, surface, cx);
+            }
         }
     }
 
@@ -219,10 +307,17 @@ impl Compositor {
 
     pub fn need_full_redraw(&mut self) {
         self.full_redraw = true;
+        self.invalidate_render_cache();
     }
 
     pub fn layer_count(&self) -> usize {
         self.layers.len()
+    }
+
+    fn invalidate_render_cache(&mut self) {
+        for cache in &mut self.layer_caches {
+            cache.invalidate();
+        }
     }
 }
 
@@ -267,6 +362,56 @@ impl<T: Component> AnyComponent for T {
 
     fn as_boxed_any(self: Box<Self>) -> Box<dyn Any> {
         self
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell_symbol(surface: &Surface, x: u16, y: u16) -> &str {
+        &surface[(x, y)].symbol
+    }
+
+    #[test]
+    fn layer_cache_replays_cached_region() {
+        let area = Rect::new(0, 0, 3, 1);
+        let mut after = Surface::empty(area);
+        after[(0, 0)].set_symbol("a");
+        after[(1, 0)].set_symbol("x");
+        after[(2, 0)].set_symbol("c");
+
+        let mut cache = LayerCache::default();
+        cache.capture(area, Rect::new(1, 0, 2, 1), &after);
+
+        let mut next_frame = Surface::empty(area);
+        next_frame[(0, 0)].set_symbol("1");
+        next_frame[(1, 0)].set_symbol("2");
+        next_frame[(2, 0)].set_symbol("3");
+
+        cache.replay(&mut next_frame);
+
+        assert_eq!(cell_symbol(&next_frame, 0, 0), "1");
+        assert_eq!(cell_symbol(&next_frame, 1, 0), "x");
+        assert_eq!(cell_symbol(&next_frame, 2, 0), "c");
+        assert_eq!(cache.region, Some(Rect::new(1, 0, 2, 1)));
+    }
+
+    #[test]
+    fn layer_cache_invalidate_clears_cached_region() {
+        let area = Rect::new(0, 0, 1, 1);
+        let mut after = Surface::empty(area);
+        after[(0, 0)].set_symbol("x");
+
+        let mut cache = LayerCache::default();
+        cache.capture(area, area, &after);
+        assert!(cache.is_valid_for(area, Some(area)));
+
+        cache.invalidate();
+
+        assert!(!cache.is_valid_for(area, Some(area)));
+        assert_eq!(cache.region, None);
+        assert!(cache.cells.is_empty());
     }
 }
 

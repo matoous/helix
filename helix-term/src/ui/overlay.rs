@@ -52,6 +52,14 @@ fn clip_rect_relative(rect: Rect, percent_horizontal: u8, percent_vertical: u8) 
 }
 
 impl<T: Component + 'static> Component for Overlay<T> {
+    fn should_update(&self) -> bool {
+        self.content.should_update()
+    }
+
+    fn render_region(&self, area: Rect) -> Option<Rect> {
+        Some((self.calc_child_size)(area))
+    }
+
     fn render(&mut self, area: Rect, frame: &mut Buffer, ctx: &mut Context) {
         let dimensions = (self.calc_child_size)(area);
         self.content.render(dimensions, frame, ctx)
