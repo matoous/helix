@@ -153,6 +153,8 @@ where
     /// Obtains a difference between the previous and the current buffer and passes it to the
     /// current backend for drawing.
     pub fn flush(&mut self) -> io::Result<()> {
+        let _profile = crate::profile::scope("Terminal::flush");
+
         if self.force_clear {
             self.backend.clear()?;
             self.force_clear = false;

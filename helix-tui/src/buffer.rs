@@ -746,6 +746,8 @@ impl Buffer {
     /// Updates: `0: a, 1: コ` (double width symbol at index 1 - skip index 2)
     /// ```
     pub fn diff<'a>(&self, other: &'a Buffer) -> Vec<(u16, u16, &'a Cell)> {
+        let _profile = crate::profile::scope("Buffer::diff");
+
         let previous_buffer = &self.content;
         let next_buffer = &other.content;
         let width = self.area.width;
