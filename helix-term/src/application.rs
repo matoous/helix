@@ -117,7 +117,7 @@ impl Application {
 
         let theme_mode = backend.get_theme_mode();
         let mut terminal = Terminal::new(backend)?;
-        let area = terminal.size();
+        let area = terminal.area();
         let mut compositor = Compositor::new(area);
         let config = Arc::new(ArcSwap::from_pointee(config));
         let handlers = handlers::setup(config.clone());
@@ -273,10 +273,7 @@ impl Application {
         helix_event::start_frame();
         cx.editor.needs_redraw = false;
 
-        let area = self
-            .terminal
-            .autoresize()
-            .expect("Unable to determine terminal size");
+        let area = self.terminal.area();
 
         // TODO: need to recalculate view tree if necessary
 
@@ -557,8 +554,10 @@ impl Application {
 
                 // redraw the terminal
                 let area = self.terminal.size();
+                self.terminal
+                    .resize(area)
+                    .expect("Unable to resize terminal");
                 self.compositor.resize(area);
-                self.terminal.clear().expect("couldn't clear terminal");
 
                 self.render().await;
             }
@@ -714,7 +713,7 @@ impl Application {
                     .resize(Rect::new(0, 0, cols, rows))
                     .expect("Unable to resize terminal");
 
-                let area = self.terminal.size();
+                let area = self.terminal.area();
 
                 self.compositor.resize(area);
 
@@ -751,7 +750,7 @@ impl Application {
                     .resize(Rect::new(0, 0, width, height))
                     .expect("Unable to resize terminal");
 
-                let area = self.terminal.size();
+                let area = self.terminal.area();
 
                 self.compositor.resize(area);
 

@@ -150,6 +150,10 @@ where
         &mut self.backend
     }
 
+    pub fn area(&self) -> Rect {
+        self.viewport.area
+    }
+
     /// Obtains a difference between the previous and the current buffer and passes it to the
     /// current backend for drawing.
     pub fn flush(&mut self) -> io::Result<()> {
