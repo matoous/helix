@@ -28,6 +28,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt::Display;
 use std::future::Future;
 use std::io;
+use std::ops::Range as StdRange;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{Arc, Weak};
@@ -60,6 +61,7 @@ const DEFAULT_TAB_WIDTH: usize = 4;
 pub const DEFAULT_LANGUAGE_NAME: &str = "text";
 
 pub const SCRATCH_BUFFER_NAME: &str = "[scratch]";
+pub const MULTIBUFFER_NAME: &str = "[multibuffer]";
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum Mode {
@@ -122,6 +124,55 @@ pub struct DocumentSavedEvent {
 
 pub type DocumentSavedEventResult = Result<DocumentSavedEvent, anyhow::Error>;
 pub type DocumentSavedEventFuture = BoxFuture<'static, DocumentSavedEventResult>;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiBuffer {
+    pub segments: Vec<MultiBufferSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MultiBufferSegment {
+    pub source: MultiBufferSource,
+    pub display_name: String,
+    pub language_name: Option<String>,
+    pub projection_range: StdRange<usize>,
+    pub source_range: StdRange<usize>,
+    pub source_line_start: usize,
+    pub original_text: String,
+}
+
+impl MultiBufferSegment {
+    pub fn projection_line_range(&self, text: &Rope) -> StdRange<usize> {
+        let start = self.projection_range.start.min(text.len_chars());
+        let end = self.projection_range.end.min(text.len_chars());
+        let start_line = text.char_to_line(start);
+        let end_line = if start == end {
+            start_line
+        } else {
+            text.char_to_line(end.saturating_sub(1))
+        };
+        start_line..end_line.saturating_add(1)
+    }
+
+    pub fn source_line_for_projection_line(&self, text: &Rope, line: usize) -> Option<usize> {
+        let projection_lines = self.projection_line_range(text);
+        projection_lines
+            .contains(&line)
+            .then(|| self.source_line_start + line.saturating_sub(projection_lines.start))
+    }
+
+    pub fn last_source_line(&self, text: &Rope) -> Option<usize> {
+        let projection_lines = self.projection_line_range(text);
+        (projection_lines.start < projection_lines.end)
+            .then(|| self.source_line_start + projection_lines.end - projection_lines.start - 1)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum MultiBufferSource {
+    Document(DocumentId),
+    Path(PathBuf),
+}
 
 #[derive(Debug)]
 pub struct SavePoint {
@@ -220,6 +271,7 @@ pub struct Document {
     pub color_swatches: Option<DocumentColorSwatches>,
     /// Cached LSP document links for navigation (e.g. goto_file).
     pub document_links: Vec<DocumentLink>,
+    multibuffer: Option<MultiBuffer>,
     // NOTE: ideally this would live on the handler for color swatches. This is blocked on a
     // large refactor that would make `&mut Editor` available on the `DocumentDidChange` event.
     pub color_swatch_controller: TaskController,
@@ -769,6 +821,7 @@ impl Document {
             code_action_hints: HashSet::new(),
             color_swatches: None,
             document_links: Vec::new(),
+            multibuffer: None,
             color_swatch_controller: TaskController::new(),
             document_highlight_controllers: HashMap::new(),
             code_action_controllers: HashMap::new(),
@@ -777,6 +830,71 @@ impl Document {
             pull_diagnostic_controller: TaskController::new(),
             document_link_controller: TaskController::new(),
         }
+    }
+
+    pub fn set_multibuffer(&mut self, multibuffer: MultiBuffer) {
+        self.multibuffer = Some(multibuffer);
+    }
+
+    pub fn multibuffer(&self) -> Option<&MultiBuffer> {
+        self.multibuffer.as_ref()
+    }
+
+    pub(crate) fn multibuffer_mut(&mut self) -> Option<&mut MultiBuffer> {
+        self.multibuffer.as_mut()
+    }
+
+    pub fn multibuffer_segment_at_line(&self, line: usize) -> Option<&MultiBufferSegment> {
+        let text = self.text();
+        self.multibuffer()?
+            .segments
+            .iter()
+            .find(|segment| segment.projection_line_range(text).contains(&line))
+    }
+
+    pub fn multibuffer_segment_starting_at(&self, char_idx: usize) -> Option<&MultiBufferSegment> {
+        let text_len = self.text().len_chars();
+        self.multibuffer()?
+            .segments
+            .iter()
+            .find(|segment| segment.projection_range.start.min(text_len) == char_idx.min(text_len))
+    }
+
+    pub fn multibuffer_segment_index_at_char(&self, char_idx: usize) -> Option<usize> {
+        let text_len = self.text().len_chars();
+        let char_idx = char_idx.min(text_len);
+        let multibuffer = self.multibuffer()?;
+        multibuffer
+            .segments
+            .iter()
+            .position(|segment| {
+                let start = segment.projection_range.start.min(text_len);
+                let end = segment.projection_range.end.min(text_len);
+                start <= char_idx && char_idx < end
+            })
+            .or_else(|| {
+                multibuffer
+                    .segments
+                    .iter()
+                    .position(|segment| segment.projection_range.start.min(text_len) == char_idx)
+            })
+    }
+
+    pub fn multibuffer_source_line_at(&self, line: usize, char_idx: usize) -> Option<usize> {
+        let text = self.text();
+        let text_len = text.len_chars();
+        let segment = self.multibuffer()?.segments.iter().find(|segment| {
+            let start = segment.projection_range.start.min(text_len);
+            let end = segment.projection_range.end.min(text_len);
+            start <= char_idx && char_idx < end
+        })?;
+        segment.source_line_for_projection_line(text, line)
+    }
+
+    pub fn multibuffer_source_line(&self, line: usize) -> Option<usize> {
+        let text = self.text();
+        let segment = self.multibuffer_segment_at_line(line)?;
+        segment.source_line_for_projection_line(text, line)
     }
 
     pub fn default(
@@ -1480,6 +1598,23 @@ impl Document {
         self.modified_since_accessed = true;
         self.version += 1;
 
+        if let Some(multibuffer) = &mut self.multibuffer {
+            for segment in &mut multibuffer.segments {
+                changes.update_positions(
+                    [
+                        (&mut segment.projection_range.start, Assoc::Before),
+                        (&mut segment.projection_range.end, Assoc::After),
+                    ]
+                    .into_iter(),
+                );
+            }
+            let text_len = self.text.len_chars();
+            multibuffer.segments.retain(|segment| {
+                segment.projection_range.start <= segment.projection_range.end
+                    && segment.projection_range.end <= text_len
+            });
+        }
+
         for selection in self.selections.values_mut() {
             *selection = selection
                 .clone()
@@ -1850,6 +1985,17 @@ impl Document {
         self.last_saved_revision = current_revision;
     }
 
+    /// Treat the current text as clean without committing pending changes to undo history.
+    ///
+    /// This is useful for projection-only maintenance, such as growing or
+    /// merging multibuffer excerpts, where the rendered buffer text changes but
+    /// the user has not edited the projection contents.
+    pub fn reset_modified_to_current_text(&mut self) {
+        self.changes = ChangeSet::new(self.text().slice(..));
+        self.old_state = None;
+        self.reset_modified();
+    }
+
     /// Set the document's latest saved revision to the given one.
     pub fn set_last_saved_revision(&mut self, rev: usize, save_time: SystemTime) {
         log::debug!(
@@ -2131,8 +2277,16 @@ impl Document {
     }
 
     pub fn display_name(&self) -> Cow<'_, str> {
-        self.relative_path()
-            .map_or_else(|| SCRATCH_BUFFER_NAME.into(), |path| path.to_string_lossy())
+        self.relative_path().map_or_else(
+            || {
+                if self.multibuffer.is_some() {
+                    MULTIBUFFER_NAME.into()
+                } else {
+                    SCRATCH_BUFFER_NAME.into()
+                }
+            },
+            |path| path.to_string_lossy(),
+        )
     }
 
     // transact(Fn) ?
@@ -2691,6 +2845,109 @@ mod test {
                 }
             ]
         );
+    }
+
+    #[test]
+    fn multibuffer_segment_ranges_track_edits() {
+        let mut doc = Document::from(
+            Rope::from("header\nbody\nfooter\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        doc.set_multibuffer(MultiBuffer {
+            segments: vec![MultiBufferSegment {
+                source: MultiBufferSource::Document(DocumentId::default()),
+                display_name: "test.rs".into(),
+                language_name: Some("rust".into()),
+                projection_range: 7..12,
+                source_range: 10..15,
+                source_line_start: 1,
+                original_text: "body\n".into(),
+            }],
+        });
+        let view = ViewId::default();
+        doc.set_selection(view, Selection::point(11));
+
+        let transaction = Transaction::insert(doc.text(), doc.selection(view), "!".into());
+        doc.apply(&transaction, view);
+
+        let segment = &doc.multibuffer().unwrap().segments[0];
+        assert_eq!(segment.projection_range, 7..13);
+        assert_eq!(segment.source_range, 10..15);
+    }
+
+    #[test]
+    fn multibuffer_source_lines_skip_between_segments() {
+        let mut doc = Document::from(
+            Rope::from("a1\na2\nb10\nb11\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        doc.set_multibuffer(MultiBuffer {
+            segments: vec![
+                MultiBufferSegment {
+                    source: MultiBufferSource::Document(DocumentId::default()),
+                    display_name: "a.rs".into(),
+                    language_name: Some("rust".into()),
+                    projection_range: 0..6,
+                    source_range: 0..6,
+                    source_line_start: 0,
+                    original_text: "a1\na2\n".into(),
+                },
+                MultiBufferSegment {
+                    source: MultiBufferSource::Document(DocumentId::default()),
+                    display_name: "b.rs".into(),
+                    language_name: Some("rust".into()),
+                    projection_range: 6..14,
+                    source_range: 0..8,
+                    source_line_start: 9,
+                    original_text: "b10\nb11\n".into(),
+                },
+            ],
+        });
+
+        assert_eq!(doc.multibuffer_source_line(0), Some(0));
+        assert_eq!(doc.multibuffer_source_line(1), Some(1));
+        assert_eq!(doc.multibuffer_source_line(2), Some(9));
+        assert_eq!(doc.multibuffer_source_line(3), Some(10));
+    }
+
+    #[test]
+    fn multibuffer_source_line_uses_char_anchor_for_adjacent_segments() {
+        let mut doc = Document::from(
+            Rope::from("a1b10\n"),
+            None,
+            Arc::new(ArcSwap::new(Arc::new(Config::default()))),
+            Arc::new(ArcSwap::from_pointee(syntax::Loader::default())),
+        );
+        doc.set_multibuffer(MultiBuffer {
+            segments: vec![
+                MultiBufferSegment {
+                    source: MultiBufferSource::Document(DocumentId::default()),
+                    display_name: "a.rs".into(),
+                    language_name: Some("rust".into()),
+                    projection_range: 0..2,
+                    source_range: 0..2,
+                    source_line_start: 0,
+                    original_text: "a1".into(),
+                },
+                MultiBufferSegment {
+                    source: MultiBufferSource::Document(DocumentId::default()),
+                    display_name: "b.rs".into(),
+                    language_name: Some("rust".into()),
+                    projection_range: 2..6,
+                    source_range: 0..4,
+                    source_line_start: 9,
+                    original_text: "b10\n".into(),
+                },
+            ],
+        });
+
+        assert_eq!(doc.multibuffer_source_line_at(0, 0), Some(0));
+        assert_eq!(doc.multibuffer_source_line_at(0, 2), Some(9));
+        assert!(doc.multibuffer_segment_starting_at(2).is_some());
     }
 
     #[test]

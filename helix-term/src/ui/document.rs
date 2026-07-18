@@ -23,6 +23,8 @@ pub struct LinePos {
     pub first_visual_line: bool,
     /// The line index of the document line that contains the given visual line
     pub doc_line: usize,
+    /// The character index at the start of the rendered visual line.
+    pub doc_char: usize,
     /// Vertical offset from the top of the inner view area
     pub visual_line: u16,
 }
@@ -84,6 +86,7 @@ pub fn render_text(
     let mut last_line_pos = LinePos {
         first_visual_line: false,
         doc_line: usize::MAX,
+        doc_char: usize::MAX,
         visual_line: u16::MAX,
     };
     let mut last_line_end = 0;
@@ -126,6 +129,7 @@ pub fn render_text(
             last_line_pos = LinePos {
                 first_visual_line: grapheme.line_idx != last_line_pos.doc_line,
                 doc_line: grapheme.line_idx,
+                doc_char: grapheme.char_idx,
                 visual_line: grapheme.visual_pos.row as u16,
             };
             decorations.decorate_line(renderer, last_line_pos);

@@ -151,6 +151,21 @@ pub trait LineAnnotation {
         usize::MAX
     }
 
+    /// This function is called before a document anchor to insert virtual text
+    /// before the next rendered grapheme.
+    ///
+    /// # Returns
+    ///
+    /// The number of additional virtual lines to reserve
+    fn insert_virtual_lines_before(
+        &mut self,
+        _char_idx: usize,
+        _visual_pos: Position,
+        _doc_line: usize,
+    ) -> Position {
+        Position::new(0, 0)
+    }
+
     /// This function is called at the end of a visual line to insert virtual text
     ///
     /// # Returns
@@ -417,6 +432,23 @@ impl<'a> TextAnnotations<'a> {
                 layer
                     .get()
                     .insert_virtual_lines(char_idx, line_end_visual_pos + virt_off, doc_line)
+            };
+        }
+        virt_off.row
+    }
+
+    pub(crate) fn virtual_lines_before(
+        &self,
+        char_idx: usize,
+        visual_pos: Position,
+        doc_line: usize,
+    ) -> usize {
+        let mut virt_off = Position::new(0, 0);
+        for (_, layer) in &self.line_annotations {
+            virt_off += unsafe {
+                layer
+                    .get()
+                    .insert_virtual_lines_before(char_idx, visual_pos + virt_off, doc_line)
             };
         }
         virt_off.row

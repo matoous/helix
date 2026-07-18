@@ -12,7 +12,8 @@ fn count_digits(n: usize) -> usize {
     (usize::checked_ilog10(n).unwrap_or(0) + 1) as usize
 }
 
-pub type GutterFn<'doc> = Box<dyn FnMut(usize, bool, bool, &mut String) -> Option<Style> + 'doc>;
+pub type GutterFn<'doc> =
+    Box<dyn FnMut(usize, usize, bool, bool, &mut String) -> Option<Style> + 'doc>;
 pub type Gutter =
     for<'doc> fn(&'doc Editor, &'doc Document, &View, &Theme, bool, usize) -> GutterFn<'doc>;
 
@@ -61,7 +62,11 @@ pub fn diagnostic<'doc>(
     let diagnostics = &doc.diagnostics;
 
     Box::new(
-        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+        move |line: usize,
+              _char_idx: usize,
+              _selected: bool,
+              first_visual_line: bool,
+              out: &mut String| {
             if !first_visual_line {
                 return None;
             }
@@ -104,7 +109,11 @@ pub fn diff<'doc>(
         let mut hunk_i = 0;
         let mut hunk = hunks.nth_hunk(hunk_i);
         Box::new(
-            move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+            move |line: usize,
+                  _char_idx: usize,
+                  _selected: bool,
+                  first_visual_line: bool,
+                  out: &mut String| {
                 // truncating the line is fine here because we don't compute diffs
                 // for files with more lines than i32::MAX anyways
                 // we need to special case removals here
@@ -137,7 +146,7 @@ pub fn diff<'doc>(
             },
         )
     } else {
-        Box::new(move |_, _, _, _| None)
+        Box::new(move |_, _, _, _, _| None)
     }
 }
 
@@ -168,7 +177,11 @@ pub fn line_numbers<'doc>(
     let mode = editor.mode;
 
     Box::new(
-        move |line: usize, selected: bool, first_visual_line: bool, out: &mut String| {
+        move |line: usize,
+              char_idx: usize,
+              selected: bool,
+              first_visual_line: bool,
+              out: &mut String| {
             if line == last_line_in_view && !draw_last {
                 write!(out, "{:>1$}", '~', width).unwrap();
                 Some(linenr)
@@ -182,6 +195,10 @@ pub fn line_numbers<'doc>(
 
                 let display_num = if relative {
                     current_line.abs_diff(line)
+                } else if let Some(source_line) = doc.multibuffer_source_line_at(line, char_idx) {
+                    source_line + 1
+                } else if let Some(source_line) = doc.multibuffer_source_line(line) {
+                    source_line + 1
                 } else {
                     line + 1
                 };
@@ -192,7 +209,9 @@ pub fn line_numbers<'doc>(
                     linenr
                 };
 
-                if first_visual_line {
+                let starts_multibuffer_segment =
+                    doc.multibuffer_segment_starting_at(char_idx).is_some();
+                if first_visual_line || starts_multibuffer_segment {
                     write!(out, "{:>1$}", display_num, width).unwrap();
                 } else {
                     write!(out, "{:>1$}", " ", width).unwrap();
@@ -210,6 +229,17 @@ pub fn line_numbers<'doc>(
 /// whether there is content on the last line (the `~` line), and the
 /// `editor.gutters.line-numbers.min-width` settings.
 fn line_numbers_width(view: &View, doc: &Document) -> usize {
+    if let Some(multibuffer) = doc.multibuffer() {
+        let text = doc.text();
+        let last_drawn = multibuffer
+            .segments
+            .iter()
+            .filter_map(|segment| segment.last_source_line(text).map(|line| line + 1))
+            .max()
+            .unwrap_or(0);
+        return count_digits(last_drawn).max(view.gutters.line_numbers.min_width);
+    }
+
     let text = doc.text();
     let last_line = text.len_lines().saturating_sub(1);
     let draw_last = text.line_to_byte(last_line) < text.len_bytes();
@@ -226,7 +256,13 @@ pub fn padding<'doc>(
     _theme: &Theme,
     _is_focused: bool,
 ) -> GutterFn<'doc> {
-    Box::new(|_line: usize, _selected: bool, _first_visual_line: bool, _out: &mut String| None)
+    Box::new(
+        |_line: usize,
+         _char_idx: usize,
+         _selected: bool,
+         _first_visual_line: bool,
+         _out: &mut String| None,
+    )
 }
 
 pub fn breakpoints<'doc>(
@@ -244,11 +280,15 @@ pub fn breakpoints<'doc>(
 
     let breakpoints = match breakpoints {
         Some(breakpoints) => breakpoints,
-        None => return Box::new(move |_, _, _, _| None),
+        None => return Box::new(move |_, _, _, _, _| None),
     };
 
     Box::new(
-        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+        move |line: usize,
+              _char_idx: usize,
+              _selected: bool,
+              first_visual_line: bool,
+              out: &mut String| {
             if !first_visual_line {
                 return None;
             }
@@ -293,7 +333,11 @@ fn execution_pause_indicator<'doc>(
         doc.path().is_some() && frame_source_path.unwrap_or(None) == doc.path();
 
     Box::new(
-        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+        move |line: usize,
+              _char_idx: usize,
+              _selected: bool,
+              first_visual_line: bool,
+              out: &mut String| {
             if !first_visual_line
                 || !is_focused
                 || line != frame_line?
@@ -320,11 +364,13 @@ pub fn diagnostics_or_breakpoints<'doc>(
     let mut breakpoints = breakpoints(editor, doc, view, theme, is_focused);
     let mut execution_pause_indicator = execution_pause_indicator(editor, doc, theme, is_focused);
 
-    Box::new(move |line, selected, first_visual_line: bool, out| {
-        execution_pause_indicator(line, selected, first_visual_line, out)
-            .or_else(|| breakpoints(line, selected, first_visual_line, out))
-            .or_else(|| diagnostics(line, selected, first_visual_line, out))
-    })
+    Box::new(
+        move |line, char_idx, selected, first_visual_line: bool, out| {
+            execution_pause_indicator(line, char_idx, selected, first_visual_line, out)
+                .or_else(|| breakpoints(line, char_idx, selected, first_visual_line, out))
+                .or_else(|| diagnostics(line, char_idx, selected, first_visual_line, out))
+        },
+    )
 }
 
 pub fn code_action_hint<'doc>(
@@ -342,7 +388,11 @@ pub fn code_action_hint<'doc>(
         .char_to_line(doc.selection(view.id).primary().cursor(text));
 
     Box::new(
-        move |line: usize, _selected: bool, first_visual_line: bool, out: &mut String| {
+        move |line: usize,
+              _char_idx: usize,
+              _selected: bool,
+              first_visual_line: bool,
+              out: &mut String| {
             (is_focused && show_hint && current_line == line && first_visual_line).then(|| {
                 write!(out, "⋮").unwrap();
                 style

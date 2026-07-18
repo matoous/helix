@@ -20,8 +20,9 @@ use helix_core::{
     syntax::{self, OverlayHighlights},
     text_annotations::TextAnnotations,
     unicode::width::UnicodeWidthStr,
-    visual_offset_from_block, Change, Position, Range, Selection, Transaction,
+    visual_offset_from_block, Change, Position, Range, Rope, Selection, Transaction,
 };
+use helix_stdx::rope::RopeSliceExt;
 use helix_view::{
     annotations::diagnostics::DiagnosticFilter,
     document::{Mode, SCRATCH_BUFFER_NAME},
@@ -29,9 +30,11 @@ use helix_view::{
     graphics::{Color, CursorKind, Modifier, Rect, Style},
     input::{KeyEvent, MouseButton, MouseEvent, MouseEventKind},
     keyboard::{KeyCode, KeyModifiers},
-    Document, Editor, Theme, View,
+    Document, DocumentId, Editor, Theme, View,
 };
-use std::{mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell, collections::HashMap, mem::take, num::NonZeroUsize, ops, path::PathBuf, rc::Rc,
+};
 
 use tui::{buffer::Buffer as Surface, text::Span};
 
@@ -42,8 +45,16 @@ pub struct EditorView {
     pub(crate) last_insert: (commands::MappableCommand, Vec<InsertEvent>),
     pub(crate) completion: Option<Completion>,
     spinners: ProgressSpinners,
+    multibuffer_highlight_cache: RefCell<HashMap<DocumentId, CachedMultiBufferHighlights>>,
     /// Tracks if the terminal window is focused by reaction to terminal focus events
     terminal_focused: bool,
+}
+
+struct CachedMultiBufferHighlights {
+    version: i32,
+    first_line: usize,
+    height: u16,
+    overlays: Vec<OverlayHighlights>,
 }
 
 #[derive(Debug, Clone)]
@@ -66,6 +77,7 @@ impl EditorView {
             last_insert: (commands::MappableCommand::normal_mode, Vec::new()),
             completion: None,
             spinners: ProgressSpinners::default(),
+            multibuffer_highlight_cache: RefCell::new(HashMap::new()),
             terminal_focused: true,
         }
     }
@@ -94,6 +106,43 @@ impl EditorView {
         let text_annotations = view.text_annotations(doc, Some(theme));
         let mut decorations = DecorationManager::default();
 
+        if let Some(multibuffer) = doc.multibuffer() {
+            let text = doc.text();
+            let headers: Vec<_> = multibuffer
+                .segments
+                .iter()
+                .map(|segment| {
+                    (
+                        segment.projection_range.start.min(text.len_chars()),
+                        segment.display_name.as_str(),
+                    )
+                })
+                .collect();
+            let header_style = theme.try_get("ui.multibuffer.header").unwrap_or_else(|| {
+                theme
+                    .get("ui.statusline.inactive")
+                    .patch(theme.get("ui.virtual"))
+            });
+            decorations.add_decoration(move |renderer: &mut TextRenderer, pos: LinePos| {
+                if pos.visual_line == 0 {
+                    return;
+                }
+
+                if let Some((_, title)) = headers.iter().find(|(anchor, _)| *anchor == pos.doc_char)
+                {
+                    let y = pos.visual_line - 1;
+                    renderer.set_style(Rect::new(area.x, y, area.width, 1), header_style);
+                    renderer.set_stringn(
+                        renderer.viewport.x,
+                        y,
+                        &format!(" {title} "),
+                        renderer.viewport.width as usize,
+                        header_style,
+                    );
+                }
+            });
+        }
+
         if is_focused && config.cursorline {
             decorations.add_decoration(Self::cursorline(doc, view, theme));
         }
@@ -116,9 +165,19 @@ impl EditorView {
             decorations.add_decoration(line_decoration);
         }
 
-        let syntax_highlighter =
-            Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader);
+        let syntax_highlighter = if doc.multibuffer().is_some() {
+            None
+        } else {
+            Self::doc_syntax_highlighter(doc, view_offset.anchor, inner.height, &loader)
+        };
         let mut overlays = Vec::new();
+
+        overlays.extend(self.cached_multibuffer_syntax_highlights(
+            doc,
+            view_offset.anchor,
+            inner.height,
+            &loader,
+        ));
 
         overlays.push(Self::overlay_syntax_highlights(
             doc,
@@ -323,6 +382,131 @@ impl EditorView {
         range = text.byte_to_char(range.start)..text.byte_to_char(range.end);
 
         text_annotations.collect_overlay_highlights(range)
+    }
+
+    fn cached_multibuffer_syntax_highlights(
+        &self,
+        doc: &Document,
+        anchor: usize,
+        height: u16,
+        loader: &syntax::Loader,
+    ) -> Vec<OverlayHighlights> {
+        if doc.multibuffer().is_none() {
+            return Vec::new();
+        }
+
+        let text = doc.text();
+        let first_line = text.char_to_line(anchor.min(text.len_chars()));
+        let doc_id = doc.id();
+        let version = doc.version();
+        let mut cache = self.multibuffer_highlight_cache.borrow_mut();
+
+        if let Some(cached) = cache.get(&doc_id) {
+            if cached.version == version
+                && cached.first_line == first_line
+                && cached.height == height
+            {
+                return cached.overlays.clone();
+            }
+        }
+
+        let overlays = Self::multibuffer_syntax_highlights(doc, first_line, height, loader);
+        cache.insert(
+            doc_id,
+            CachedMultiBufferHighlights {
+                version,
+                first_line,
+                height,
+                overlays: overlays.clone(),
+            },
+        );
+        overlays
+    }
+
+    pub fn multibuffer_syntax_highlights(
+        doc: &Document,
+        first_line: usize,
+        height: u16,
+        loader: &syntax::Loader,
+    ) -> Vec<OverlayHighlights> {
+        let Some(multibuffer) = doc.multibuffer() else {
+            return Vec::new();
+        };
+
+        let text = doc.text();
+        let last_line = first_line.saturating_add(height as usize).saturating_add(1);
+        let mut layers: Vec<Vec<(syntax::Highlight, ops::Range<usize>)>> = Vec::new();
+
+        for segment in &multibuffer.segments {
+            let segment_lines = segment.projection_line_range(text);
+            if segment_lines.end <= first_line || segment_lines.start > last_line {
+                continue;
+            }
+
+            let Some(language_name) = segment.language_name.as_deref() else {
+                continue;
+            };
+            let Some(language) = loader.language_for_name(language_name) else {
+                continue;
+            };
+            if segment.projection_range.end > text.len_chars()
+                || segment.projection_range.start > segment.projection_range.end
+            {
+                continue;
+            }
+
+            let segment_text: Rope = text.slice(segment.projection_range.clone()).into();
+            let Ok(syntax) = syntax::Syntax::new(segment_text.slice(..), language, loader) else {
+                continue;
+            };
+            let mut highlighter = syntax.highlighter(segment_text.slice(..), loader, ..);
+            let segment_slice = segment_text.slice(..);
+            let mut active = Vec::new();
+
+            loop {
+                let event_start_byte = highlighter.next_event_offset();
+                if event_start_byte == u32::MAX {
+                    break;
+                }
+
+                let (event, highlights) = highlighter.advance();
+                match event {
+                    syntax::HighlightEvent::Refresh => {
+                        active.clear();
+                        active.extend(highlights);
+                    }
+                    syntax::HighlightEvent::Push => active.extend(highlights),
+                }
+
+                let event_end_byte = highlighter.next_event_offset();
+                if event_end_byte == u32::MAX || event_start_byte >= event_end_byte {
+                    continue;
+                }
+
+                let start = segment.projection_range.start
+                    + segment_slice
+                        .byte_to_char(segment_slice.ceil_char_boundary(event_start_byte as usize));
+                let end = segment.projection_range.start
+                    + segment_slice
+                        .byte_to_char(segment_slice.ceil_char_boundary(event_end_byte as usize));
+                if start >= end {
+                    continue;
+                }
+
+                for (layer, highlight) in active.iter().copied().enumerate() {
+                    if layers.len() <= layer {
+                        layers.resize_with(layer + 1, Vec::new);
+                    }
+                    layers[layer].push((highlight, start..end));
+                }
+            }
+        }
+
+        layers
+            .into_iter()
+            .filter(|highlights| !highlights.is_empty())
+            .map(|highlights| OverlayHighlights::Heterogenous { highlights })
+            .collect()
     }
 
     pub fn doc_rainbow_highlights(
@@ -754,9 +938,13 @@ impl EditorView {
                     (true, false) => gutter_selected_style_virtual,
                 };
 
-                if let Some(style) =
-                    gutter(pos.doc_line, selected, pos.first_visual_line, &mut text)
-                {
+                if let Some(style) = gutter(
+                    pos.doc_line,
+                    pos.doc_char,
+                    selected,
+                    pos.first_visual_line,
+                    &mut text,
+                ) {
                     renderer.set_stringn(x, y, &text, width, gutter_style.patch(style));
                 } else {
                     renderer.set_style(

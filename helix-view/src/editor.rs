@@ -1,8 +1,10 @@
 use crate::{
+    align_view,
     annotations::diagnostics::{DiagnosticFilter, InlineDiagnosticsConfig},
     clipboard::ClipboardProvider,
     document::{
-        DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, SavePoint,
+        DocumentOpenError, DocumentSavedEventFuture, DocumentSavedEventResult, Mode, MultiBuffer,
+        MultiBufferSource, SavePoint,
     },
     events::{DocumentDidClose, DocumentDidOpen, DocumentFocusLost},
     graphics::{CursorKind, Rect},
@@ -12,7 +14,7 @@ use crate::{
     register::Registers,
     theme::{self, Theme},
     tree::{self, Tree},
-    Document, DocumentId, View, ViewId,
+    Align, Document, DocumentId, View, ViewId,
 };
 use helix_event::dispatch;
 use helix_loader::workspace_trust::{ImplicitTrustLevel, TrustQuery, WorkspaceTrust};
@@ -50,7 +52,7 @@ use helix_core::{
         self,
         config::{AutoPairConfig, IndentationHeuristic, LanguageServerFeature, SoftWrap},
     },
-    Change, LineEnding, Position, Range, Selection, Uri, NATIVE_LINE_ENDING,
+    Change, LineEnding, Position, Range, Selection, Tendril, Transaction, Uri, NATIVE_LINE_ENDING,
 };
 use helix_dap::{self as dap, registry::DebugAdapterId};
 use helix_lsp::lsp;
@@ -1392,6 +1394,13 @@ pub enum Action {
     VerticalSplit,
 }
 
+#[derive(Debug, Copy, Clone)]
+pub enum MultiBufferExpand {
+    Up,
+    Down,
+    Both,
+}
+
 impl Action {
     /// Whether to align the view to the cursor after executing this action
     pub fn align_view(&self, view: &View, new_doc: DocumentId) -> bool {
@@ -1955,6 +1964,7 @@ impl Editor {
                 let remove_empty_scratch = !doc.is_modified()
                     // If the buffer has no path and is not modified, it is an empty scratch buffer.
                     && doc.path().is_none()
+                    && doc.multibuffer().is_none()
                     // If the buffer we are changing to is not this buffer
                     && id != doc.id
                     // Ensure the buffer is not displayed in any other splits.
@@ -2072,6 +2082,23 @@ impl Editor {
             action,
             Document::default(self.config.clone(), self.syn_loader.clone()),
         )
+    }
+
+    pub fn new_multibuffer_from_text(
+        &mut self,
+        action: Action,
+        text: impl Into<String>,
+        multibuffer: MultiBuffer,
+    ) -> DocumentId {
+        let mut doc = Document::from(
+            helix_core::Rope::from(text.into()),
+            None,
+            self.config.clone(),
+            self.syn_loader.clone(),
+        );
+        doc.set_multibuffer(multibuffer);
+        doc.reset_modified();
+        self.new_file_from_document(action, doc)
     }
 
     pub fn new_file_from_stdin(&mut self, action: Action) -> Result<DocumentId, Error> {
@@ -2239,6 +2266,10 @@ impl Editor {
         path: Option<P>,
         force: bool,
     ) -> anyhow::Result<()> {
+        if path.is_none() && doc!(self, &doc_id).multibuffer().is_some() {
+            return self.save_multibuffer(doc_id, force);
+        }
+
         // convert a channel of futures to pipe into main queue one by one
         // via stream.then() ? then push into main future
 
@@ -2267,6 +2298,560 @@ impl Editor {
 
         self.write_count += 1;
 
+        Ok(())
+    }
+
+    fn save_multibuffer(&mut self, doc_id: DocumentId, force: bool) -> anyhow::Result<()> {
+        let (multibuffer, text) = {
+            let doc = doc!(self, &doc_id);
+            let multibuffer = doc
+                .multibuffer()
+                .ok_or_else(|| anyhow!("document is not a multibuffer"))?
+                .clone();
+            (multibuffer, doc.text().clone())
+        };
+
+        let mut edits = Vec::new();
+        for (index, segment) in multibuffer.segments.into_iter().enumerate() {
+            if segment.projection_range.end > text.len_chars()
+                || segment.projection_range.start > segment.projection_range.end
+            {
+                bail!("multibuffer segment no longer maps to valid text");
+            }
+            let replacement_text =
+                std::borrow::Cow::from(text.slice(segment.projection_range.clone())).into_owned();
+            let replacement = Tendril::from(replacement_text.as_str());
+            edits.push((
+                index,
+                segment.source,
+                segment.source_range,
+                segment.original_text,
+                replacement_text,
+                replacement,
+            ));
+        }
+
+        let mut edits_by_document: HashMap<
+            DocumentId,
+            Vec<(usize, std::ops::Range<usize>, String, String, Tendril)>,
+        > = HashMap::new();
+        for (index, source, source_range, original_text, replacement_text, replacement) in edits {
+            let source_doc_id = match source {
+                MultiBufferSource::Document(id) => {
+                    if !self.documents.contains_key(&id) {
+                        bail!("multibuffer source document no longer exists");
+                    }
+                    id
+                }
+                MultiBufferSource::Path(path) => self.open(&path, Action::Load)?,
+            };
+            edits_by_document.entry(source_doc_id).or_default().push((
+                index,
+                source_range,
+                original_text,
+                replacement_text,
+                replacement,
+            ));
+        }
+
+        let view_id = view!(self).id;
+        let gutters = self.config().gutters.clone();
+        let mut segment_updates = Vec::new();
+        let mut saved = 0;
+        for (source_doc_id, mut edits) in edits_by_document {
+            edits.sort_by_key(|(_, range, _, _, _)| range.start);
+            {
+                let doc = doc_mut!(self, &source_doc_id);
+                if doc.path().is_none() {
+                    bail!("multibuffer source '{}' has no path", doc.display_name());
+                }
+                doc.ensure_view_init(view_id);
+                let text_len = doc.text().len_chars();
+                let mut previous_end = 0;
+                for (_, range, original_text, _, _) in &edits {
+                    if range.end > text_len || range.start > range.end {
+                        bail!(
+                            "multibuffer source '{}' changed outside the excerpt mapping",
+                            doc.display_name()
+                        );
+                    }
+                    if range.start < previous_end {
+                        bail!(
+                            "multibuffer source '{}' has overlapping excerpts",
+                            doc.display_name()
+                        );
+                    }
+                    previous_end = range.end;
+                    if !force
+                        && std::borrow::Cow::from(doc.text().slice(range.clone())).as_ref()
+                            != original_text
+                    {
+                        bail!(
+                            "multibuffer source '{}' changed since the multibuffer was opened; use :w! to overwrite",
+                            doc.display_name()
+                        );
+                    }
+                }
+                let mut offset: isize = 0;
+                for (index, range, _, replacement_text, _) in &edits {
+                    let new_start = range.start.saturating_add_signed(offset);
+                    let new_end = new_start + replacement_text.chars().count();
+                    segment_updates.push((*index, new_start..new_end, replacement_text.clone()));
+                    offset += replacement_text.chars().count() as isize
+                        - (range.end - range.start) as isize;
+                }
+                let transaction = Transaction::change(
+                    doc.text(),
+                    edits.into_iter().map(|(_, range, _, _, replacement)| {
+                        (range.start, range.end, Some(replacement))
+                    }),
+                );
+                doc.apply(&transaction, view_id);
+                let mut history_view = View::new(source_doc_id, gutters.clone());
+                doc.append_changes_to_history(&mut history_view);
+            }
+            self.save(source_doc_id, None::<PathBuf>, force)?;
+            saved += 1;
+        }
+
+        let doc = doc_mut!(self, &doc_id);
+        if let Some(multibuffer) = doc.multibuffer_mut() {
+            for (index, source_range, original_text) in segment_updates {
+                if let Some(segment) = multibuffer.segments.get_mut(index) {
+                    segment.source_range = source_range;
+                    segment.original_text = original_text;
+                }
+            }
+        }
+        doc.reset_modified();
+        self.set_status(format!("wrote {saved} multibuffer source file(s)"));
+
+        Ok(())
+    }
+
+    pub fn extend_multibuffer_excerpt(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+    ) -> anyhow::Result<()> {
+        self.expand_multibuffer_excerpt(doc_id, view_id, MultiBufferExpand::Both)
+    }
+
+    pub fn expand_multibuffer_excerpt(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        expand: MultiBufferExpand,
+    ) -> anyhow::Result<()> {
+        let (was_modified, segment_index, segment, projection_text) = {
+            let doc = doc!(self, &doc_id);
+            let was_modified = doc.is_modified();
+            let cursor = doc
+                .selection(view_id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            let segment_index = doc
+                .multibuffer_segment_index_at_char(cursor)
+                .ok_or_else(|| anyhow!("cursor is not inside a multibuffer excerpt"))?;
+            let segment = doc
+                .multibuffer()
+                .and_then(|multibuffer| multibuffer.segments.get(segment_index))
+                .ok_or_else(|| anyhow!("multibuffer segment no longer exists"))?;
+            if segment.projection_range.end > doc.text().len_chars()
+                || segment.projection_range.start > segment.projection_range.end
+            {
+                bail!("multibuffer segment no longer maps to valid text");
+            }
+            let projection_text =
+                std::borrow::Cow::from(doc.text().slice(segment.projection_range.clone()))
+                    .into_owned();
+            (
+                was_modified,
+                segment_index,
+                segment.clone(),
+                projection_text,
+            )
+        };
+
+        let source_doc_id = match segment.source.clone() {
+            MultiBufferSource::Document(id) => {
+                if !self.documents.contains_key(&id) {
+                    bail!("multibuffer source document no longer exists");
+                }
+                id
+            }
+            MultiBufferSource::Path(path) => self.open(&path, Action::Load)?,
+        };
+
+        let (
+            new_source_range,
+            new_source_line_start,
+            expanded_original_text,
+            expanded_projection_text,
+            prefix_len,
+            suffix_len,
+        ) = {
+            let source_doc = doc!(self, &source_doc_id);
+            let source_text = source_doc.text();
+            if segment.source_range.end > source_text.len_chars()
+                || segment.source_range.start > segment.source_range.end
+            {
+                bail!(
+                    "multibuffer source '{}' changed outside the excerpt mapping",
+                    source_doc.display_name()
+                );
+            }
+
+            let start_line = source_text.char_to_line(segment.source_range.start);
+            let end_line = source_text.char_to_line(segment.source_range.end);
+            let new_start_line =
+                if matches!(expand, MultiBufferExpand::Up | MultiBufferExpand::Both) {
+                    start_line.saturating_sub(3)
+                } else {
+                    start_line
+                };
+            let new_end_line =
+                if matches!(expand, MultiBufferExpand::Down | MultiBufferExpand::Both) {
+                    (end_line + 3).min(source_text.len_lines())
+                } else {
+                    end_line
+                };
+            let new_source_start = source_text.line_to_char(new_start_line);
+            let new_source_end = source_text.line_to_char(new_end_line);
+
+            if new_source_start == segment.source_range.start
+                && new_source_end == segment.source_range.end
+            {
+                bail!("multibuffer excerpt cannot be extended further");
+            }
+
+            let prefix = source_text
+                .slice(new_source_start..segment.source_range.start)
+                .to_string();
+            let suffix = source_text
+                .slice(segment.source_range.end..new_source_end)
+                .to_string();
+            let prefix_len = prefix.chars().count();
+            let suffix_len = suffix.chars().count();
+            let expanded_projection_text = format!("{prefix}{projection_text}{suffix}");
+            let expanded_original_text = source_text
+                .slice(new_source_start..new_source_end)
+                .to_string();
+
+            (
+                new_source_start..new_source_end,
+                new_start_line,
+                expanded_original_text,
+                expanded_projection_text,
+                prefix_len,
+                suffix_len,
+            )
+        };
+
+        {
+            let doc = doc_mut!(self, &doc_id);
+            let selection = doc.selection(view_id).clone();
+            let current_range = doc
+                .multibuffer()
+                .and_then(|multibuffer| multibuffer.segments.get(segment_index))
+                .map(|segment| segment.projection_range.clone())
+                .ok_or_else(|| anyhow!("multibuffer segment no longer exists"))?;
+            let transaction = Transaction::change(
+                doc.text(),
+                std::iter::once((
+                    current_range.start,
+                    current_range.end,
+                    Some(Tendril::from(expanded_projection_text.as_str())),
+                )),
+            );
+            doc.apply(&transaction, view_id);
+            let inserted_len = prefix_len + suffix_len;
+            let map_pos = |pos: usize| {
+                if pos < current_range.start {
+                    pos
+                } else if pos <= current_range.end {
+                    pos + prefix_len
+                } else {
+                    pos + inserted_len
+                }
+            };
+            doc.set_selection(
+                view_id,
+                selection.transform(|range| Range {
+                    anchor: map_pos(range.anchor),
+                    head: map_pos(range.head),
+                    old_visual_position: range.old_visual_position,
+                }),
+            );
+            if let Some(segment) = doc
+                .multibuffer_mut()
+                .and_then(|multibuffer| multibuffer.segments.get_mut(segment_index))
+            {
+                segment.source_range = new_source_range;
+                segment.source_line_start = new_source_line_start;
+                segment.original_text = expanded_original_text;
+            }
+        }
+
+        self.merge_overlapping_multibuffer_excerpts(doc_id, view_id, segment_index, source_doc_id)?;
+        if !was_modified {
+            doc_mut!(self, &doc_id).reset_modified_to_current_text();
+        }
+
+        Ok(())
+    }
+
+    fn merge_overlapping_multibuffer_excerpts(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        segment_index: usize,
+        source_doc_id: DocumentId,
+    ) -> anyhow::Result<()> {
+        let source_text = doc!(self, &source_doc_id).text().clone();
+        let Some((
+            first_segment,
+            last_segment,
+            projection_start,
+            projection_end,
+            source_start,
+            source_end,
+            replacement_text,
+        )) = ({
+            let doc = doc!(self, &doc_id);
+            let text_len = doc.text().len_chars();
+            let multibuffer = doc
+                .multibuffer()
+                .ok_or_else(|| anyhow!("document is not a multibuffer"))?;
+            let segment = multibuffer
+                .segments
+                .get(segment_index)
+                .ok_or_else(|| anyhow!("multibuffer segment no longer exists"))?;
+            let source = &segment.source;
+            let mut first_segment = segment_index;
+            let mut last_segment = segment_index;
+            let mut source_start = segment.source_range.start;
+            let mut source_end = segment.source_range.end;
+
+            while first_segment > 0 {
+                let previous = &multibuffer.segments[first_segment - 1];
+                if &previous.source != source
+                    || previous.source_range.start > source_end
+                    || previous.source_range.end < source_start
+                {
+                    break;
+                }
+                first_segment -= 1;
+                source_start = source_start.min(previous.source_range.start);
+                source_end = source_end.max(previous.source_range.end);
+            }
+
+            while last_segment + 1 < multibuffer.segments.len() {
+                let next = &multibuffer.segments[last_segment + 1];
+                if &next.source != source
+                    || next.source_range.start > source_end
+                    || next.source_range.end < source_start
+                {
+                    break;
+                }
+                last_segment += 1;
+                source_start = source_start.min(next.source_range.start);
+                source_end = source_end.max(next.source_range.end);
+            }
+
+            if first_segment == last_segment {
+                None
+            } else {
+                let projection_start = multibuffer.segments[first_segment]
+                    .projection_range
+                    .start
+                    .min(text_len);
+                let projection_end = multibuffer.segments[last_segment]
+                    .projection_range
+                    .end
+                    .min(text_len);
+                if projection_start > projection_end
+                    || source_end > source_text.len_chars()
+                    || source_start > source_end
+                {
+                    bail!("multibuffer segment no longer maps to valid text");
+                }
+                let replacement_text =
+                    std::borrow::Cow::from(source_text.slice(source_start..source_end))
+                        .into_owned();
+                Some((
+                    first_segment,
+                    last_segment,
+                    projection_start,
+                    projection_end,
+                    source_start,
+                    source_end,
+                    replacement_text,
+                ))
+            }
+        })
+        else {
+            return Ok(());
+        };
+
+        {
+            let doc = doc_mut!(self, &doc_id);
+            let selection = doc.selection(view_id).clone();
+            let segments = doc
+                .multibuffer()
+                .ok_or_else(|| anyhow!("document is not a multibuffer"))?
+                .segments[first_segment..=last_segment]
+                .to_vec();
+            let replacement_len = replacement_text.chars().count();
+            let replaced_len = projection_end - projection_start;
+            let map_pos = |pos: usize| {
+                if pos < projection_start {
+                    return pos;
+                }
+                if pos <= projection_end {
+                    if let Some(segment) = segments
+                        .iter()
+                        .find(|segment| {
+                            segment.projection_range.start <= pos
+                                && pos < segment.projection_range.end
+                        })
+                        .or_else(|| {
+                            segments
+                                .last()
+                                .filter(|segment| pos == segment.projection_range.end)
+                        })
+                    {
+                        return projection_start
+                            + segment.source_range.start.saturating_sub(source_start)
+                            + pos.saturating_sub(segment.projection_range.start);
+                    }
+                    return projection_start;
+                }
+                pos.saturating_add(replacement_len)
+                    .saturating_sub(replaced_len)
+            };
+            let transaction = Transaction::change(
+                doc.text(),
+                std::iter::once((
+                    projection_start,
+                    projection_end,
+                    Some(Tendril::from(replacement_text.as_str())),
+                )),
+            );
+            doc.apply(&transaction, view_id);
+            doc.set_selection(
+                view_id,
+                selection.transform(|range| Range {
+                    anchor: map_pos(range.anchor),
+                    head: map_pos(range.head),
+                    old_visual_position: range.old_visual_position,
+                }),
+            );
+
+            let source_line_start = source_text.char_to_line(source_start);
+            if let Some(multibuffer) = doc.multibuffer_mut() {
+                let segment = &mut multibuffer.segments[first_segment];
+                segment.projection_range = projection_start..projection_start + replacement_len;
+                segment.source_range = source_start..source_end;
+                segment.source_line_start = source_line_start;
+                segment.original_text = replacement_text;
+                multibuffer.segments.drain(first_segment + 1..=last_segment);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn goto_next_multibuffer_excerpt(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+    ) -> anyhow::Result<()> {
+        let doc = doc_mut!(self, &doc_id);
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view_id).primary().cursor(text);
+        let text_len = doc.text().len_chars();
+        let position = doc
+            .multibuffer()
+            .and_then(|multibuffer| {
+                multibuffer
+                    .segments
+                    .iter()
+                    .map(|segment| segment.projection_range.start.min(text_len))
+                    .filter(|start| *start > cursor)
+                    .min()
+            })
+            .ok_or_else(|| anyhow!("no next multibuffer excerpt"))?;
+        doc.set_selection(view_id, Selection::point(position));
+        Ok(())
+    }
+
+    pub fn goto_previous_multibuffer_excerpt_end(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+    ) -> anyhow::Result<()> {
+        let doc = doc_mut!(self, &doc_id);
+        let text = doc.text().slice(..);
+        let cursor = doc.selection(view_id).primary().cursor(text);
+        let text_len = doc.text().len_chars();
+        let position = doc
+            .multibuffer()
+            .and_then(|multibuffer| {
+                multibuffer
+                    .segments
+                    .iter()
+                    .map(|segment| segment.projection_range.end.min(text_len))
+                    .filter(|end| *end <= cursor)
+                    .max()
+            })
+            .and_then(|end| end.checked_sub(1))
+            .ok_or_else(|| anyhow!("no previous multibuffer excerpt"))?;
+        doc.set_selection(view_id, Selection::point(position));
+        Ok(())
+    }
+
+    pub fn open_multibuffer_excerpt(
+        &mut self,
+        doc_id: DocumentId,
+        view_id: ViewId,
+        action: Action,
+    ) -> anyhow::Result<()> {
+        let segment = {
+            let doc = doc!(self, &doc_id);
+            let cursor = doc
+                .selection(view_id)
+                .primary()
+                .cursor(doc.text().slice(..));
+            let segment_index = doc
+                .multibuffer_segment_index_at_char(cursor)
+                .ok_or_else(|| anyhow!("cursor is not inside a multibuffer excerpt"))?;
+            doc.multibuffer()
+                .and_then(|multibuffer| multibuffer.segments.get(segment_index))
+                .cloned()
+                .ok_or_else(|| anyhow!("multibuffer segment no longer exists"))?
+        };
+
+        let source_doc_id = match segment.source {
+            MultiBufferSource::Document(id) => {
+                if !self.documents.contains_key(&id) {
+                    bail!("multibuffer source document no longer exists");
+                }
+                self.switch(id, action);
+                id
+            }
+            MultiBufferSource::Path(path) => self.open(&path, action)?,
+        };
+
+        let (view, doc) = current!(self);
+        debug_assert_eq!(doc.id(), source_doc_id);
+        let text_len = doc.text().len_chars();
+        let start = segment.source_range.start.min(text_len);
+        let end = segment.source_range.end.min(text_len).max(start);
+        doc.set_selection(view.id, Selection::single(start, end));
+        if action.align_view(view, source_doc_id) {
+            align_view(doc, view, Align::Center);
+        }
         Ok(())
     }
 

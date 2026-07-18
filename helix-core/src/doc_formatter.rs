@@ -181,6 +181,13 @@ pub struct DocumentFormatter<'t> {
     char_pos: usize,
     /// The line pos of the `graphemes` iter used for inserting annotations
     line_pos: usize,
+    /// The document position where `insert_virtual_lines_before` last ran.
+    ///
+    /// The formatter can observe the same `char_pos` multiple times while
+    /// yielding wrapped or annotated graphemes. Virtual lines inserted before a
+    /// document position should only affect the visual position once, otherwise
+    /// repeated observations would keep pushing the rendered text down.
+    virtual_lines_before_inserted_at: usize,
     exhausted: bool,
 
     inline_annotation_graphemes: Option<(Graphemes<'t>, Option<Highlight>)>,
@@ -223,6 +230,7 @@ impl<'t> DocumentFormatter<'t> {
             graphemes: text.slice(block_char_idx..).graphemes(),
             char_pos: block_char_idx,
             exhausted: false,
+            virtual_lines_before_inserted_at: usize::MAX,
             indent_level: None,
             peeked_grapheme: None,
             word_buf: Vec::with_capacity(64),
@@ -433,6 +441,22 @@ impl<'t> Iterator for DocumentFormatter<'t> {
     type Item = FormattedGrapheme<'t>;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if self.virtual_lines_before_inserted_at != self.char_pos {
+            let virtual_lines = self.annotations.virtual_lines_before(
+                self.char_pos,
+                self.visual_pos,
+                self.line_pos,
+            );
+            if virtual_lines > 0 {
+                if self.visual_pos.col > 0 {
+                    self.visual_pos.row += 1;
+                    self.visual_pos.col = 0;
+                }
+                self.visual_pos.row += virtual_lines;
+            }
+            self.virtual_lines_before_inserted_at = self.char_pos;
+        }
+
         let grapheme = if self.text_fmt.soft_wrap {
             if self.word_i >= self.word_buf.len() {
                 self.advance_to_next_word();
