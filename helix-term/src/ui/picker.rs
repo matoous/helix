@@ -13,6 +13,7 @@ use crate::{
         EditorView,
     },
 };
+use anyhow::bail;
 use futures_util::future::BoxFuture;
 use helix_event::AsyncHook;
 use nucleo::pattern::{CaseMatching, Normalization};
@@ -32,6 +33,7 @@ use std::{
     borrow::Cow,
     collections::HashMap,
     io::Read,
+    ops::Range,
     path::Path,
     sync::{
         atomic::{self, AtomicUsize},
@@ -42,9 +44,10 @@ use std::{
 use crate::ui::{Prompt, PromptEvent};
 use helix_core::{
     char_idx_at_visual_offset, fuzzy::MATCHER, movement::Direction,
-    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position,
+    text_annotations::TextAnnotations, unicode::segmentation::UnicodeSegmentation, Position, Rope,
 };
 use helix_view::{
+    document::{MultiBuffer, MultiBufferSegment, MultiBufferSource},
     editor::Action,
     graphics::{CursorKind, Margin, Modifier, Rect},
     theme::Style,
@@ -59,6 +62,8 @@ pub const ID: &str = "picker";
 pub const MIN_AREA_WIDTH_FOR_PREVIEW: u16 = 72;
 /// Biggest file size to preview in bytes
 pub const MAX_FILE_SIZE_FOR_PREVIEW: u64 = 10 * 1024 * 1024;
+const MAX_MULTIBUFFER_EXCERPTS: u32 = 2000;
+const MULTIBUFFER_CONTEXT_LINES: usize = 2;
 
 #[derive(PartialEq, Eq, Hash)]
 pub enum PathOrId<'a> {
@@ -79,6 +84,14 @@ impl From<DocumentId> for PathOrId<'_> {
 }
 
 type FileCallback<T> = Box<dyn for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>>>;
+
+struct MultiBufferExcerptGroup {
+    display_name: String,
+    text: Rope,
+    source: MultiBufferSource,
+    language_name: Option<String>,
+    line_ranges: Vec<Range<usize>>,
+}
 
 /// File path and range of lines (used to align and highlight lines)
 pub type FileLocation<'a> = (PathOrId<'a>, Option<(usize, usize)>);
@@ -127,6 +140,211 @@ impl Preview<'_, '_> {
             },
         }
     }
+}
+
+fn resolve_multibuffer_source(
+    editor: &Editor,
+    path_or_id: PathOrId<'_>,
+) -> Option<(String, Rope, MultiBufferSource, Option<String>)> {
+    let loader = editor.syn_loader.load();
+    Some(match path_or_id {
+        PathOrId::Id(id) => {
+            let doc = editor.documents.get(&id)?;
+            let source = doc
+                .path()
+                .map(|path| MultiBufferSource::Path(path.to_path_buf()))
+                .unwrap_or(MultiBufferSource::Document(id));
+            (
+                doc.display_name().to_string(),
+                doc.text().clone(),
+                source,
+                doc.language_name().map(str::to_owned).or_else(|| {
+                    doc.detect_language_config(&loader)
+                        .map(|config| config.language_id.clone())
+                }),
+            )
+        }
+        PathOrId::Path(path) => {
+            let path = helix_stdx::path::canonicalize(path);
+            if let Some(doc) = editor.document_by_path(&path) {
+                (
+                    doc.display_name().to_string(),
+                    doc.text().clone(),
+                    MultiBufferSource::Path(path),
+                    doc.language_name().map(str::to_owned).or_else(|| {
+                        doc.detect_language_config(&loader)
+                            .map(|config| config.language_id.clone())
+                    }),
+                )
+            } else {
+                let display_name = helix_stdx::path::get_relative_path(path.as_path())
+                    .to_string_lossy()
+                    .into_owned();
+                let doc = Document::open(
+                    &path,
+                    None,
+                    false,
+                    editor.config.clone(),
+                    editor.syn_loader.clone(),
+                )
+                .ok()?;
+                (
+                    display_name,
+                    doc.text().clone(),
+                    MultiBufferSource::Path(path),
+                    doc.detect_language_config(&loader)
+                        .map(|config| config.language_id.clone()),
+                )
+            }
+        }
+    })
+}
+
+pub fn multibuffer_from_locations<'a>(
+    editor: &Editor,
+    locations: impl IntoIterator<Item = FileLocation<'a>>,
+) -> anyhow::Result<(String, MultiBuffer)> {
+    let mut groups = Vec::<MultiBufferExcerptGroup>::new();
+    let mut group_by_source = HashMap::<MultiBufferSource, usize>::new();
+    for (path_or_id, range) in locations {
+        let Some((display_name, text, source, language_name)) =
+            resolve_multibuffer_source(editor, path_or_id)
+        else {
+            continue;
+        };
+        let Some(line_range) = multibuffer_excerpt_line_range(&text, range) else {
+            continue;
+        };
+
+        let group_index = *group_by_source.entry(source.clone()).or_insert_with(|| {
+            let index = groups.len();
+            groups.push(MultiBufferExcerptGroup {
+                display_name,
+                text,
+                source,
+                language_name,
+                line_ranges: Vec::new(),
+            });
+            index
+        });
+        groups[group_index].line_ranges.push(line_range);
+    }
+
+    let mut output = String::new();
+    let mut segments = Vec::new();
+    for group in &mut groups {
+        merge_line_ranges(&mut group.line_ranges);
+        for line_range in group.line_ranges.iter().cloned() {
+            if let Some(segment) = append_excerpt_with_source(
+                &mut output,
+                &group.display_name,
+                &group.text,
+                line_range,
+                group.source.clone(),
+                group.language_name.clone(),
+            ) {
+                segments.push(segment);
+            }
+        }
+    }
+
+    if segments.is_empty() {
+        bail!("No previewable file locations to open");
+    }
+
+    Ok((output, MultiBuffer { segments }))
+}
+
+pub fn open_multibuffer_from_locations<'a>(
+    editor: &mut Editor,
+    locations: impl IntoIterator<Item = FileLocation<'a>>,
+) -> anyhow::Result<()> {
+    let (output, multibuffer) = multibuffer_from_locations(editor, locations)?;
+    editor.new_multibuffer_from_text(Action::Replace, output, multibuffer);
+    Ok(())
+}
+
+fn multibuffer_excerpt_line_range(
+    text: &Rope,
+    range: Option<(usize, usize)>,
+) -> Option<Range<usize>> {
+    if text.len_lines() == 0 {
+        return None;
+    }
+
+    let last_line = text.len_lines().saturating_sub(1);
+    let (line_start, line_end) = range.unwrap_or((0, MULTIBUFFER_CONTEXT_LINES * 2));
+    if line_start > last_line {
+        return None;
+    }
+    let line_end = line_end.min(last_line);
+    let excerpt_start = line_start.saturating_sub(MULTIBUFFER_CONTEXT_LINES);
+    let excerpt_end = (line_end + MULTIBUFFER_CONTEXT_LINES).min(last_line);
+    Some(excerpt_start..excerpt_end + 1)
+}
+
+fn merge_line_ranges(line_ranges: &mut Vec<Range<usize>>) {
+    line_ranges.sort_unstable_by_key(|range| range.start);
+    let mut merged: Vec<Range<usize>> = Vec::with_capacity(line_ranges.len());
+    for range in line_ranges.drain(..) {
+        if let Some(previous) = merged.last_mut() {
+            if range.start <= previous.end {
+                previous.end = previous.end.max(range.end);
+                continue;
+            }
+        }
+        merged.push(range);
+    }
+    *line_ranges = merged;
+}
+
+#[cfg(test)]
+fn append_excerpt(
+    output: &mut String,
+    display_name: &str,
+    text: &Rope,
+    range: Option<(usize, usize)>,
+) -> Option<MultiBufferSegment> {
+    let line_range = multibuffer_excerpt_line_range(text, range)?;
+    append_excerpt_with_source(
+        output,
+        display_name,
+        text,
+        line_range,
+        MultiBufferSource::Document(DocumentId::default()),
+        None,
+    )
+}
+
+fn append_excerpt_with_source(
+    output: &mut String,
+    display_name: &str,
+    text: &Rope,
+    line_range: Range<usize>,
+    source: MultiBufferSource,
+    language_name: Option<String>,
+) -> Option<MultiBufferSegment> {
+    if line_range.start >= line_range.end || line_range.end > text.len_lines() {
+        return None;
+    }
+
+    let source_start = text.line_to_char(line_range.start);
+    let source_end = text.line_to_char(line_range.end);
+    let excerpt_text = text.slice(source_start..source_end).to_string();
+
+    let projection_start = output.chars().count();
+    output.push_str(&excerpt_text);
+    let projection_end = output.chars().count();
+
+    Some(MultiBufferSegment {
+        source,
+        display_name: display_name.to_string(),
+        language_name,
+        projection_range: projection_start..projection_end,
+        source_range: source_start..source_end,
+        source_line_start: line_range.start,
+        original_text: excerpt_text,
+    })
 }
 
 fn inject_nucleo_item<T, D>(
@@ -413,15 +631,20 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         self
     }
 
-    pub fn with_preview(
+    pub fn with_file_locations(
         mut self,
-        preview_fn: impl for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>> + 'static,
+        file_fn: impl for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>> + 'static,
     ) -> Self {
-        self.file_fn = Some(Box::new(preview_fn));
-        // assumption: if we have a preview we are matching paths... If this is ever
-        // not true this could be a separate builder function
+        self.file_fn = Some(Box::new(file_fn));
         self.matcher.update_config(Config::DEFAULT.match_paths());
         self
+    }
+
+    pub fn with_preview(
+        self,
+        preview_fn: impl for<'a> Fn(&'a Editor, &'a T) -> Option<FileLocation<'a>> + 'static,
+    ) -> Self {
+        self.with_file_locations(preview_fn)
     }
 
     pub fn with_history_register(mut self, history_register: Option<char>) -> Self {
@@ -522,6 +745,35 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
     pub fn toggle_preview(&mut self) {
         self.show_preview = !self.show_preview;
+    }
+
+    fn open_multibuffer(&self, ctx: &mut Context) {
+        let Some(file_fn) = self.file_fn.as_ref() else {
+            ctx.editor
+                .set_error("Picker entries do not provide file locations");
+            return;
+        };
+
+        let snapshot = self.matcher.snapshot();
+        let count = snapshot.matched_item_count().min(MAX_MULTIBUFFER_EXCERPTS);
+        if count == 0 {
+            ctx.editor.set_error("No picker matches to open");
+            return;
+        }
+
+        let multibuffer = {
+            let locations = snapshot
+                .matched_items(..count)
+                .filter_map(|item| file_fn(ctx.editor, item.data));
+            multibuffer_from_locations(ctx.editor, locations)
+        };
+        match multibuffer {
+            Ok((output, multibuffer)) => {
+                ctx.editor
+                    .new_multibuffer_from_text(Action::Replace, output, multibuffer);
+            }
+            Err(err) => ctx.editor.set_error(err.to_string()),
+        }
     }
 
     fn prompt_handle_event(&mut self, event: &Event, cx: &mut Context) -> EventResult {
@@ -1158,6 +1410,10 @@ impl<I: 'static + Send + Sync, D: 'static + Send + Sync> Component for Picker<I,
                 }
                 return close_fn(self);
             }
+            ctrl!('o') => {
+                self.open_multibuffer(ctx);
+                return close_fn(self);
+            }
             ctrl!('t') => {
                 self.toggle_preview();
             }
@@ -1205,3 +1461,50 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
 }
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn excerpt_marks_match_and_includes_context() {
+        let text = Rope::from("one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+        let mut output = String::new();
+
+        let segment = append_excerpt(&mut output, "test.rs", &text, Some((3, 3))).unwrap();
+
+        assert_eq!(output, "two\nthree\nfour\nfive\nsix\n");
+        assert_eq!(segment.display_name, "test.rs");
+        assert_eq!(segment.projection_range, 0..24);
+        assert_eq!(segment.source_range, 4..28);
+        assert_eq!(segment.source_line_start, 1);
+    }
+
+    #[test]
+    fn excerpts_do_not_insert_separator_lines() {
+        let first = Rope::from("one\ntwo\nthree\n");
+        let second = Rope::from("ten\neleven\ntwelve\n");
+        let mut output = String::new();
+
+        let first_segment = append_excerpt(&mut output, "first.rs", &first, Some((1, 1))).unwrap();
+        let second_segment =
+            append_excerpt(&mut output, "second.rs", &second, Some((1, 1))).unwrap();
+
+        assert_eq!(output, "one\ntwo\nthree\nten\neleven\ntwelve\n");
+        assert_eq!(first_segment.projection_range, 0..14);
+        assert_eq!(second_segment.projection_range, 14..32);
+    }
+
+    #[test]
+    fn overlapping_context_ranges_are_merged() {
+        let text = Rope::from("one\ntwo\nthree\nfour\nfive\nsix\nseven\n");
+        let mut ranges = vec![
+            multibuffer_excerpt_line_range(&text, Some((2, 2))).unwrap(),
+            multibuffer_excerpt_line_range(&text, Some((3, 3))).unwrap(),
+        ];
+
+        merge_line_ranges(&mut ranges);
+
+        assert_eq!(ranges, vec![0..6]);
+    }
+}
