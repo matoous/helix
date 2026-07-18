@@ -46,7 +46,7 @@ use helix_core::{
 };
 use helix_view::{
     document::{FormatterError, Mode, SCRATCH_BUFFER_NAME},
-    editor::{Action, Motion},
+    editor::{Action, Motion, MultiBufferExpand},
     expansion,
     info::Info,
     input::KeyEvent,
@@ -420,6 +420,13 @@ impl MappableCommand {
         diagnostics_picker, "Open diagnostic picker",
         workspace_diagnostics_picker, "Open workspace diagnostic picker",
         last_picker, "Open last picker",
+        extend_multibuffer_excerpt, "Extend multibuffer excerpt around cursor",
+        expand_multibuffer_excerpt_up, "Expand multibuffer excerpt upward around cursor",
+        expand_multibuffer_excerpt_down, "Expand multibuffer excerpt downward around cursor",
+        goto_next_multibuffer_excerpt, "Move to start of next multibuffer excerpt",
+        goto_previous_multibuffer_excerpt_end, "Move to end of previous multibuffer excerpt",
+        open_multibuffer_excerpt_vsplit, "Open multibuffer excerpt source in vertical split",
+        open_selections_in_multibuffer, "Open selections in a multibuffer",
         insert_at_line_start, "Insert at start of line",
         insert_at_line_end, "Insert at end of line",
         open_below, "Open new line below selection",
@@ -1341,6 +1348,65 @@ fn goto_file_vsplit(cx: &mut Context) {
     goto_file_impl(cx, Action::VerticalSplit);
 }
 
+fn selected_file_paths(text: RopeSlice, selections: &[Range]) -> Vec<String> {
+    if selections.len() == 1 && selections[0].len() == 1 {
+        let selection = selections[0];
+        // Cap the search at roughly 1k bytes around the cursor.
+        let lookaround = 1000;
+        let pos = text.char_to_byte(selection.cursor(text));
+        let search_start = text
+            .line_to_byte(text.byte_to_line(pos))
+            .max(text.floor_char_boundary(pos.saturating_sub(lookaround)));
+        let search_end = text
+            .line_to_byte(text.byte_to_line(pos) + 1)
+            .min(text.ceil_char_boundary(pos + lookaround));
+        let search_range = text.byte_slice(search_start..search_end);
+        // we also allow paths that are next to the cursor (can be ambiguous but
+        // rarely so in practice) so that gf on quoted/braced path works (not sure about this
+        // but apparently that is how gf has worked historically in helix)
+        let path = find_paths(search_range, true)
+            .take_while(|range| search_start + range.start <= pos + 1)
+            .find(|range| pos <= search_start + range.end)
+            .map(|range| Cow::from(search_range.byte_slice(range)));
+        log::debug!("goto_file auto-detected path: {path:?}");
+        let path = path.unwrap_or_else(|| selection.fragment(text));
+        vec![path.into_owned()]
+    } else {
+        // Otherwise use each selection, trimmed.
+        selections
+            .iter()
+            .map(|range| range.fragment(text).trim().to_owned())
+            .filter(|sel| !sel.is_empty())
+            .collect()
+    }
+}
+
+fn open_selections_in_multibuffer(cx: &mut Context) {
+    let (doc_id, ranges) = {
+        let (view, doc) = current_ref!(cx.editor);
+        let text = doc.text().slice(..);
+        let ranges: Vec<_> = doc
+            .selection(view.id)
+            .ranges()
+            .iter()
+            .map(|range| range.line_range(text))
+            .collect();
+        (doc.id(), ranges)
+    };
+
+    if ranges.is_empty() {
+        cx.editor.set_error("No selections to open");
+        return;
+    }
+
+    let locations = ranges
+        .into_iter()
+        .map(|(start, end)| (doc_id.into(), Some((start, end))));
+    if let Err(err) = ui::picker::open_multibuffer_from_locations(cx.editor, locations) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
 /// Returns true when a selection overlaps an LSP document link range.
 fn selection_overlaps_document_link(
     selection: &Range,
@@ -1464,36 +1530,7 @@ fn goto_file_impl(cx: &mut Context, action: Action) {
         return;
     }
 
-    let paths: Vec<_> = if fallback_ranges.len() == 1 && fallback_ranges[0].len() == 1 {
-        let selection = fallback_ranges[0];
-        // Cap the search at roughly 1k bytes around the cursor.
-        let lookaround = 1000;
-        let pos = text.char_to_byte(selection.cursor(text));
-        let search_start = text
-            .line_to_byte(text.byte_to_line(pos))
-            .max(text.floor_char_boundary(pos.saturating_sub(lookaround)));
-        let search_end = text
-            .line_to_byte(text.byte_to_line(pos) + 1)
-            .min(text.ceil_char_boundary(pos + lookaround));
-        let search_range = text.byte_slice(search_start..search_end);
-        // we also allow paths that are next to the cursor (can be ambiguous but
-        // rarely so in practice) so that gf on quoted/braced path works (not sure about this
-        // but apparently that is how gf has worked historically in helix)
-        let path = find_paths(search_range, true)
-            .take_while(|range| search_start + range.start <= pos + 1)
-            .find(|range| pos <= search_start + range.end)
-            .map(|range| Cow::from(search_range.byte_slice(range)));
-        log::debug!("goto_file auto-detected path: {path:?}");
-        let path = path.unwrap_or_else(|| selection.fragment(text));
-        vec![path.into_owned()]
-    } else {
-        // Otherwise use each selection, trimmed.
-        fallback_ranges
-            .iter()
-            .map(|range| range.fragment(text).trim().to_owned())
-            .filter(|sel| !sel.is_empty())
-            .collect()
-    };
+    let paths = selected_file_paths(text, &fallback_ranges);
 
     for sel in paths {
         if let Ok(url) = Url::parse(&sel) {
@@ -3982,6 +4019,58 @@ fn open_above(cx: &mut Context) {
 
 fn normal_mode(cx: &mut Context) {
     cx.editor.enter_normal_mode();
+}
+
+fn extend_multibuffer_excerpt(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    if let Err(err) = cx.editor.extend_multibuffer_excerpt(doc.id(), view.id) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+fn expand_multibuffer_excerpt(cx: &mut Context, expand: MultiBufferExpand) {
+    let (view, doc) = current_ref!(cx.editor);
+    if let Err(err) = cx
+        .editor
+        .expand_multibuffer_excerpt(doc.id(), view.id, expand)
+    {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+fn expand_multibuffer_excerpt_up(cx: &mut Context) {
+    expand_multibuffer_excerpt(cx, MultiBufferExpand::Up);
+}
+
+fn expand_multibuffer_excerpt_down(cx: &mut Context) {
+    expand_multibuffer_excerpt(cx, MultiBufferExpand::Down);
+}
+
+fn goto_next_multibuffer_excerpt(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    if let Err(err) = cx.editor.goto_next_multibuffer_excerpt(doc.id(), view.id) {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+fn goto_previous_multibuffer_excerpt_end(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    if let Err(err) = cx
+        .editor
+        .goto_previous_multibuffer_excerpt_end(doc.id(), view.id)
+    {
+        cx.editor.set_error(err.to_string());
+    }
+}
+
+fn open_multibuffer_excerpt_vsplit(cx: &mut Context) {
+    let (view, doc) = current_ref!(cx.editor);
+    if let Err(err) = cx
+        .editor
+        .open_multibuffer_excerpt(doc.id(), view.id, Action::VerticalSplit)
+    {
+        cx.editor.set_error(err.to_string());
+    }
 }
 
 // Store a jump on the jumplist.
