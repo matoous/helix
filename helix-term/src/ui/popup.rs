@@ -337,7 +337,7 @@ impl<T: Component> Component for Popup<T> {
 
         let mut inner = area;
         if render_borders {
-            inner = area.inner(Margin::all(1));
+            inner = area.inner(Margin::new(1, 1));
             Widget::render(Block::bordered(), area, surface);
         }
         let border = usize::from(render_borders);
@@ -373,11 +373,21 @@ impl<T: Component> Component for Popup<T> {
                     if scroll_line <= i && i < scroll_line + scroll_height {
                         // Draw scroll thumb
                         cell.set_symbol(half_block);
-                        cell.set_fg(scroll_style.fg.unwrap_or(helix_view::theme::Color::Reset));
+                        cell.set_fg(
+                            scroll_style
+                                .fg
+                                .unwrap_or(helix_view::theme::Color::Reset)
+                                .into(),
+                        );
                     } else if !render_borders {
                         // Draw scroll track
                         cell.set_symbol(half_block);
-                        cell.set_fg(scroll_style.bg.unwrap_or(helix_view::theme::Color::Reset));
+                        cell.set_fg(
+                            scroll_style
+                                .bg
+                                .unwrap_or(helix_view::theme::Color::Reset)
+                                .into(),
+                        );
                     }
                 }
             }
@@ -388,3 +398,4 @@ impl<T: Component> Component for Popup<T> {
         Some(self.id)
     }
 }
+use tui::buffer::BufferExt as _;

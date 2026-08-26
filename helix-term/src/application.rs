@@ -11,13 +11,13 @@ use helix_view::{
     align_view,
     document::{DocumentOpenError, DocumentSavedEventResult},
     editor::{ConfigEvent, EditorEvent},
-    graphics::Rect,
+    graphics::{CursorKind, Rect},
     theme,
     tree::Layout,
     Align, Editor,
 };
 use serde_json::json;
-use tui::backend::Backend;
+use tui::backend::{Backend, BackendExt};
 
 use crate::{
     args::Args,
@@ -65,7 +65,7 @@ type TerminalEvent = termina::Event;
 #[cfg(windows)]
 type TerminalEvent = crossterm::event::Event;
 
-type Terminal = tui::terminal::Terminal<TerminalBackend>;
+type Terminal = tui::Terminal<TerminalBackend>;
 
 pub struct Application {
     compositor: Compositor,
@@ -117,7 +117,7 @@ impl Application {
 
         let theme_mode = backend.get_theme_mode();
         let mut terminal = Terminal::new(backend)?;
-        let area = terminal.size();
+        let area = Rect::from(terminal.size()?);
         let mut compositor = Compositor::new(area);
         let config = Arc::new(ArcSwap::from_pointee(config));
         let handlers = handlers::setup(config.clone());
@@ -259,6 +259,10 @@ impl Application {
     }
 
     async fn render(&mut self) {
+        self.terminal
+            .backend_mut()
+            .start_sync()
+            .expect("Cannot start synchronized rendering");
         if self.compositor.full_redraw {
             self.terminal.clear().expect("Cannot clear the terminal");
             self.compositor.full_redraw = false;
@@ -273,22 +277,36 @@ impl Application {
         helix_event::start_frame();
         cx.editor.needs_redraw = false;
 
-        let area = self
-            .terminal
+        self.terminal
             .autoresize()
             .expect("Unable to determine terminal size");
+        let area = Rect::from(
+            self.terminal
+                .size()
+                .expect("Unable to determine terminal size"),
+        );
 
         // TODO: need to recalculate view tree if necessary
 
-        let surface = self.terminal.current_buffer_mut();
-
-        self.compositor.render(area, surface, &mut cx);
-        let (pos, kind) = self.compositor.cursor(area, &self.editor);
+        let mut kind = CursorKind::Hidden;
+        self.terminal
+            .draw(|frame| {
+                self.compositor.render(area, frame.buffer_mut(), &mut cx);
+                let (pos, cursor_kind) = self.compositor.cursor(area, cx.editor);
+                kind = cursor_kind;
+                if let Some(pos) = pos {
+                    frame.set_cursor_position((pos.col as u16, pos.row as u16));
+                }
+            })
+            .unwrap();
         // reset cursor cache
         self.editor.cursor_cache.reset();
 
-        let pos = pos.map(|pos| (pos.col as u16, pos.row as u16));
-        self.terminal.draw(pos, kind).unwrap();
+        if kind != CursorKind::Hidden {
+            self.terminal.backend_mut().show_cursor_kind(kind).unwrap();
+        }
+        self.terminal.backend_mut().end_sync().unwrap();
+        self.terminal.backend_mut().flush().unwrap();
     }
 
     pub async fn event_loop<S>(&mut self, input_stream: &mut S)
@@ -386,7 +404,11 @@ impl Application {
             ConfigEvent::Update(editor_config) => {
                 let mut app_config = (*self.config.load().clone()).clone();
                 app_config.editor = *editor_config;
-                if let Err(err) = self.terminal.reconfigure((&app_config.editor).into()) {
+                if let Err(err) = self
+                    .terminal
+                    .backend_mut()
+                    .reconfigure((&app_config.editor).into())
+                {
                     self.editor.set_error(err.to_string());
                 };
                 self.config.store(Arc::new(app_config));
@@ -450,7 +472,9 @@ impl Application {
                 document.replace_diagnostics(diagnostics, &[], None);
             }
 
-            self.terminal.reconfigure((&default_config.editor).into())?;
+            self.terminal
+                .backend_mut()
+                .reconfigure((&default_config.editor).into())?;
             // Store new config
             self.config.store(Arc::new(default_config));
             Ok(())
@@ -548,7 +572,7 @@ impl Application {
                 // https://github.com/neovim/neovim/issues/12322
                 // https://github.com/neovim/neovim/pull/13084
                 for retries in 1..=10 {
-                    match self.terminal.claim() {
+                    match self.terminal.backend_mut().claim() {
                         Ok(()) => break,
                         Err(err) if retries == 10 => panic!("Failed to claim terminal: {}", err),
                         Err(_) => continue,
@@ -556,7 +580,7 @@ impl Application {
                 }
 
                 // redraw the terminal
-                let area = self.terminal.size();
+                let area = Rect::from(self.terminal.size().expect("failed to read terminal size"));
                 self.compositor.resize(area);
                 self.terminal.clear().expect("couldn't clear terminal");
 
@@ -714,7 +738,7 @@ impl Application {
                     .resize(Rect::new(0, 0, cols, rows))
                     .expect("Unable to resize terminal");
 
-                let area = self.terminal.size();
+                let area = Rect::from(self.terminal.size().expect("failed to read terminal size"));
 
                 self.compositor.resize(area);
 
@@ -751,7 +775,7 @@ impl Application {
                     .resize(Rect::new(0, 0, width, height))
                     .expect("Unable to resize terminal");
 
-                let area = self.terminal.size();
+                let area = Rect::from(self.terminal.size().expect("failed to read terminal size"));
 
                 self.compositor.resize(area);
 
@@ -1274,9 +1298,9 @@ impl Application {
         use helix_view::graphics::CursorKind;
         self.terminal
             .backend_mut()
-            .show_cursor(CursorKind::Block)
+            .show_cursor_kind(CursorKind::Block)
             .ok();
-        self.terminal.restore()
+        self.terminal.backend_mut().restore()
     }
 
     #[cfg(all(not(feature = "integration"), not(windows)))]
@@ -1323,7 +1347,7 @@ impl Application {
     where
         S: Stream<Item = std::io::Result<TerminalEvent>> + Unpin,
     {
-        self.terminal.claim()?;
+        self.terminal.backend_mut().claim()?;
 
         self.event_loop(input_stream).await;
 
@@ -1368,6 +1392,6 @@ impl Application {
 impl ui::menu::Item for lsp::MessageActionItem {
     type Data = ();
     fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
-        self.title.as_str().into()
+        tui::widgets::Row::new([self.title.as_str()])
     }
 }

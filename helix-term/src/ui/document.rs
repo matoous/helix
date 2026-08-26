@@ -580,3 +580,4 @@ impl<'t> OverlayHighlighter<'t> {
         self.update_pos();
     }
 }
+use tui::buffer::BufferExt as _;

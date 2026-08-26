@@ -20,7 +20,7 @@ use nucleo::{
     pattern::{Atom, AtomKind, CaseMatching, Normalization},
     Config, Utf32Str,
 };
-use tui::text::Spans;
+use tui::text::Line;
 use tui::{buffer::Buffer as Surface, text::Span};
 
 use std::cmp::Reverse;
@@ -78,7 +78,7 @@ impl menu::Item for CompletionItem {
                     })
                     .and_then(|c| Color::from_hex(c).ok())
                     .map_or("color".into(), |color| {
-                        Spans::from(vec![
+                        Line::from(vec![
                             Span::raw("color "),
                             Span::styled("■", Style::default().fg(color)),
                         ])
@@ -105,7 +105,7 @@ impl menu::Item for CompletionItem {
             label,
             if deprecated {
                 Style::default().add_modifier(Modifier::CROSSED_OUT)
-            } else if kind.0[0].content == "folder" {
+            } else if kind.spans[0].content == "folder" {
                 *dir_style
             } else {
                 Style::default()
@@ -662,3 +662,4 @@ fn completion_changes(transaction: &Transaction, trigger_offset: usize) -> Vec<C
         .filter(|(start, end, _)| (*start..=*end).contains(&trigger_offset))
         .collect()
 }
+use tui::buffer::BufferExt as _;

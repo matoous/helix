@@ -829,7 +829,7 @@ impl EditorView {
         }
 
         let text = Text::from(lines);
-        let paragraph = Paragraph::new(&text)
+        let paragraph = Paragraph::new(text.clone())
             .alignment(Alignment::Right)
             .wrap(Wrap { trim: true });
         let width = 100.min(viewport.width);
@@ -1759,3 +1759,5 @@ fn canonicalize_key(key: &mut KeyEvent) {
         key.modifiers.remove(KeyModifiers::SHIFT)
     }
 }
+use helix_view::graphics::RectExt as _;
+use tui::buffer::BufferExt as _;

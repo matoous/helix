@@ -14,7 +14,7 @@ use helix_vcs::{FileChange, Hunk};
 pub use lsp::*;
 pub use syntax::*;
 use tui::{
-    text::{Span, Spans},
+    text::{Line, Span},
     widgets::Cell,
 };
 pub use typed::*;
@@ -3304,7 +3304,7 @@ impl PathStyleConfig {
             ]);
         }
 
-        Cell::from(Spans::from(spans))
+        Cell::from(Line::from(spans))
     }
 }
 

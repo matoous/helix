@@ -1253,3 +1253,4 @@ mod tests {
         );
     }
 }
+use crate::graphics::RectExt as _;

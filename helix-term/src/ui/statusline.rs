@@ -13,7 +13,7 @@ use crate::ui::ProgressSpinners;
 
 use helix_view::editor::StatusLineElement as StatusLineElementID;
 use tui::buffer::Buffer as Surface;
-use tui::text::{Span, Spans};
+use tui::text::{Line, Span};
 
 pub struct RenderContext<'a> {
     pub editor: &'a Editor,
@@ -45,9 +45,9 @@ impl<'a> RenderContext<'a> {
 
 #[derive(Default)]
 pub struct RenderBuffer<'a> {
-    pub left: Spans<'a>,
-    pub center: Spans<'a>,
-    pub right: Spans<'a>,
+    pub left: Line<'a>,
+    pub center: Line<'a>,
+    pub right: Line<'a>,
 }
 
 pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface) {
@@ -120,9 +120,9 @@ pub fn render(context: &mut RenderContext, viewport: Rect, surface: &mut Surface
     );
 }
 
-fn append<'a>(buffer: &mut Spans<'a>, mut span: Span<'a>, base_style: Style) {
-    span.style = base_style.patch(span.style);
-    buffer.0.push(span);
+fn append<'a>(buffer: &mut Line<'a>, mut span: Span<'a>, base_style: Style) {
+    span.style = tui::style::Style::from(base_style).patch(span.style);
+    buffer.spans.push(span);
 }
 
 fn get_render_function<'a, F>(element_id: StatusLineElementID) -> impl Fn(&mut RenderContext<'a>, F)
@@ -593,3 +593,5 @@ where
         write(context, " ⋮ ".into())
     }
 }
+use helix_view::graphics::RectExt as _;
+use tui::buffer::BufferExt as _;

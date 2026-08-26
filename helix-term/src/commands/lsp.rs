@@ -591,7 +591,7 @@ pub fn workspace_diagnostics_picker(cx: &mut Context) {
 impl ui::menu::Item for CodeActionItem {
     type Data = ();
     fn format(&self, _data: &Self::Data) -> Row<'_> {
-        self.title().into()
+        Row::new([self.title()])
     }
 }
 

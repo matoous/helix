@@ -122,10 +122,9 @@ impl crate::ui::menu::Item for TrustChoice {
     type Data = ();
 
     fn format(&self, _data: &Self::Data) -> tui::widgets::Row<'_> {
-        match self {
+        tui::widgets::Row::new([match self {
             TrustChoice::Trust => "Trust",
             TrustChoice::Never => "Never",
-        }
-        .into()
+        }])
     }
 }

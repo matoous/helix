@@ -10,7 +10,7 @@
 | helix-loader    | Functions for building, fetching, and loading external resources |
 | helix-view      | UI abstractions for use in backends, imperative shell.           |
 | helix-term      | Terminal UI                                                      |
-| helix-tui       | TUI primitives, forked from tui-rs, inspired by Cursive          |
+| helix-tui       | Ratatui integration and Helix-specific terminal rendering         |
 
 
 This document contains a high-level overview of Helix internals.

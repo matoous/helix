@@ -454,10 +454,10 @@ impl Prompt {
             {
                 let is_selected = Some(i) == self.selection;
 
-                let completion_item_style = if is_selected {
-                    selected_color
+                let completion_item_style: tui::style::Style = if is_selected {
+                    selected_color.into()
                 } else {
-                    completion_color.patch(completion.style)
+                    tui::style::Style::from(completion_color).patch(completion.style)
                 };
 
                 surface.set_stringn(
@@ -504,7 +504,7 @@ impl Prompt {
                 // .title(self.title.as_str())
                 .border_style(background);
 
-            let inner = block.inner(area).inner(Margin::horizontal(1));
+            let inner = block.inner(area).inner(Margin::new(1, 0));
 
             block.render(area, surface);
             text.render(inner, surface, cx);
@@ -798,3 +798,5 @@ impl Component for Prompt {
         )
     }
 }
+use helix_view::graphics::RectExt as _;
+use tui::buffer::BufferExt as _;

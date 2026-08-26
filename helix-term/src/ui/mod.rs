@@ -32,7 +32,7 @@ pub use spinner::{ProgressSpinners, Spinner};
 pub use text::Text;
 
 use helix_view::Editor;
-use tui::text::{Span, Spans};
+use tui::text::{Line, Span};
 
 use std::path::Path;
 use std::{error::Error, path::PathBuf};
@@ -274,7 +274,7 @@ pub fn file_picker(editor: &Editor, root: PathBuf) -> FilePicker {
                 .expect("normalized paths can't end in `..`")
                 .to_string_lossy();
             spans.push(Span::raw(filename));
-            Spans::from(spans).into()
+            Line::from(spans).into()
         },
     )];
     let picker = Picker::new(columns, 0, [], data, move |cx, path: &PathBuf, action| {

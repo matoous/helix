@@ -3,7 +3,13 @@ use std::io::{self, Write as _};
 use helix_view::{
     editor::KittyKeyboardProtocolConfig,
     graphics::{CursorKind, Rect, UnderlineStyle},
-    theme::{self, Color, Modifier},
+    theme::{self, Color},
+};
+use ratatui::{
+    backend::{Backend, ClearType, WindowSize as RatatuiWindowSize},
+    buffer::Cell,
+    layout::{Position, Size},
+    style::{Color as RatatuiColor, Modifier},
 };
 use termina::{
     escape::{
@@ -11,13 +17,13 @@ use termina::{
         dcs::{self, Dcs},
         osc::{self, Osc},
     },
-    style::{CursorStyle, RgbColor},
-    Event, OneBased, PlatformTerminal, Terminal as _, WindowSize,
+    style::{ColorSpec, CursorStyle, RgbColor},
+    Event, OneBased, PlatformTerminal, Terminal as _, WindowSize as TerminaWindowSize,
 };
 
-use crate::{buffer::Cell, terminal::Config};
+use crate::terminal::Config;
 
-use super::Backend;
+use super::BackendExt;
 
 // These macros are helpers to set/unset modes like bracketed paste or enter/exit the alternate
 // screen.
@@ -407,7 +413,7 @@ impl TerminaBackend {
     }
 }
 
-impl Backend for TerminaBackend {
+impl TerminaBackend {
     fn claim(&mut self) -> io::Result<()> {
         self.terminal.enter_raw_mode()?;
 
@@ -474,9 +480,9 @@ impl Backend for TerminaBackend {
     where
         I: Iterator<Item = (u16, u16, &'a Cell)>,
     {
-        let mut fg = Color::Reset;
-        let mut bg = Color::Reset;
-        let mut underline_color = Color::Reset;
+        let mut fg = RatatuiColor::Reset;
+        let mut bg = RatatuiColor::Reset;
+        let mut underline_color = RatatuiColor::Reset;
         let mut underline_style = UnderlineStyle::Reset;
         let mut modifier = Modifier::empty();
         let mut last_pos: Option<(u16, u16)> = None;
@@ -496,11 +502,11 @@ impl Backend for TerminaBackend {
 
             let mut attributes = SgrAttributes::default();
             if cell.fg != fg {
-                attributes.foreground = Some(cell.fg.into());
+                attributes.foreground = Some(color_to_termina(cell.fg));
                 fg = cell.fg;
             }
             if cell.bg != bg {
-                attributes.background = Some(cell.bg.into());
+                attributes.background = Some(color_to_termina(cell.bg));
                 bg = cell.bg;
             }
             if cell.modifier != modifier {
@@ -508,23 +514,24 @@ impl Backend for TerminaBackend {
                 modifier = cell.modifier;
             }
 
-            // Set underline style and color separately from SgrAttributes. Some terminals seem
-            // to not like underline colors and styles being intermixed with other SGRs.
-            let mut new_underline_style = cell.underline_style;
-            if self.capabilities.extended_underlines {
-                if cell.underline_color != underline_color {
-                    write!(
-                        self.terminal,
-                        "{}",
-                        Csi::Sgr(csi::Sgr::UnderlineColor(cell.underline_color.into()))
-                    )?;
-                    underline_color = cell.underline_color;
-                }
-            } else {
-                match new_underline_style {
-                    UnderlineStyle::Reset | UnderlineStyle::Line => (),
-                    _ => new_underline_style = UnderlineStyle::Line,
-                }
+            if self.capabilities.extended_underlines && cell.underline_color != underline_color {
+                write!(
+                    self.terminal,
+                    "{}",
+                    Csi::Sgr(csi::Sgr::UnderlineColor(color_to_termina(
+                        cell.underline_color
+                    )))
+                )?;
+                underline_color = cell.underline_color;
+            }
+            let mut new_underline_style = UnderlineStyle::from_ratatui_modifier(cell.modifier);
+            if !self.capabilities.extended_underlines
+                && !matches!(
+                    new_underline_style,
+                    UnderlineStyle::Reset | UnderlineStyle::Line
+                )
+            {
+                new_underline_style = UnderlineStyle::Line;
             }
             if new_underline_style != underline_style {
                 write!(
@@ -546,7 +553,7 @@ impl Backend for TerminaBackend {
                 )?;
             }
 
-            write!(self.terminal, "{}", &cell.symbol)?;
+            write!(self.terminal, "{}", cell.symbol())?;
         }
 
         write!(self.terminal, "{}", Csi::Sgr(csi::Sgr::Reset))?;
@@ -558,7 +565,7 @@ impl Backend for TerminaBackend {
         write!(self.terminal, "{}", decreset!(ShowCursor))
     }
 
-    fn show_cursor(&mut self, kind: CursorKind) -> io::Result<()> {
+    fn show_cursor_kind(&mut self, kind: CursorKind) -> io::Result<()> {
         let style = match kind {
             CursorKind::Block => CursorStyle::SteadyBlock,
             CursorKind::Bar => CursorStyle::SteadyBar,
@@ -600,7 +607,7 @@ impl Backend for TerminaBackend {
     }
 
     fn size(&self) -> io::Result<Rect> {
-        let WindowSize { rows, cols, .. } = self.terminal.get_dimensions()?;
+        let TerminaWindowSize { rows, cols, .. } = self.terminal.get_dimensions()?;
         Ok(Rect::new(0, 0, cols, rows))
     }
 
@@ -636,6 +643,125 @@ impl Backend for TerminaBackend {
         } else {
             self.reset_background_color()
         }
+    }
+}
+
+impl Backend for TerminaBackend {
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        TerminaBackend::draw(self, content)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        TerminaBackend::hide_cursor(self)
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        TerminaBackend::show_cursor_kind(self, CursorKind::Block)
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        write!(
+            self.terminal,
+            "{}",
+            Csi::Cursor(csi::Cursor::RequestActivePositionReport)
+        )?;
+        self.terminal.flush()?;
+        let event = self.terminal.read(|event| {
+            matches!(
+                event,
+                Event::Csi(Csi::Cursor(csi::Cursor::ActivePositionReport { .. }))
+            )
+        })?;
+        let Event::Csi(Csi::Cursor(csi::Cursor::ActivePositionReport { line, col })) = event else {
+            return Err(io::Error::other("unexpected cursor-position response"));
+        };
+        Ok(Position::new(col.get_zero_based(), line.get_zero_based()))
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        let Position { x, y } = position.into();
+        TerminaBackend::set_cursor(self, x, y)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        TerminaBackend::clear(self)
+    }
+
+    fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
+        let edit = match clear_type {
+            ClearType::All => csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseDisplay),
+            ClearType::AfterCursor => {
+                csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseToEndOfDisplay)
+            }
+            ClearType::BeforeCursor => {
+                csi::Edit::EraseInDisplay(csi::EraseInDisplay::EraseToStartOfDisplay)
+            }
+            ClearType::CurrentLine => csi::Edit::EraseInLine(csi::EraseInLine::EraseLine),
+            ClearType::UntilNewLine => csi::Edit::EraseInLine(csi::EraseInLine::EraseToEndOfLine),
+        };
+        write!(self.terminal, "{}", Csi::Edit(edit))
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        Ok(TerminaBackend::size(self)?.as_size())
+    }
+
+    fn window_size(&mut self) -> io::Result<RatatuiWindowSize> {
+        let size = self.terminal.get_dimensions()?;
+        Ok(RatatuiWindowSize {
+            columns_rows: Size::new(size.cols, size.rows),
+            pixels: Size::new(
+                size.pixel_width.unwrap_or_default(),
+                size.pixel_height.unwrap_or_default(),
+            ),
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        TerminaBackend::flush(self)
+    }
+}
+
+impl BackendExt for TerminaBackend {
+    fn claim(&mut self) -> io::Result<()> {
+        TerminaBackend::claim(self)
+    }
+
+    fn reconfigure(&mut self, config: Config) -> io::Result<()> {
+        TerminaBackend::reconfigure(self, config)
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        TerminaBackend::restore(self)
+    }
+
+    fn show_cursor_kind(&mut self, kind: CursorKind) -> io::Result<()> {
+        TerminaBackend::show_cursor_kind(self, kind)
+    }
+
+    fn start_sync(&mut self) -> io::Result<()> {
+        TerminaBackend::start_sync(self)
+    }
+
+    fn end_sync(&mut self) -> io::Result<()> {
+        TerminaBackend::end_sync(self)
+    }
+
+    fn supports_true_color(&self) -> bool {
+        TerminaBackend::supports_true_color(self)
+    }
+
+    fn get_theme_mode(&self) -> Option<theme::Mode> {
+        TerminaBackend::get_theme_mode(self)
+    }
+
+    fn set_background_color(&mut self, color: Option<Color>) -> io::Result<()> {
+        TerminaBackend::set_background_color(self, color)
     }
 }
 
@@ -719,4 +845,28 @@ fn diff_modifiers(from: Modifier, to: Modifier) -> SgrModifiers {
     }
 
     modifiers
+}
+
+fn color_to_termina(color: RatatuiColor) -> ColorSpec {
+    match color {
+        RatatuiColor::Reset => ColorSpec::Reset,
+        RatatuiColor::Black => ColorSpec::BLACK,
+        RatatuiColor::Red => ColorSpec::RED,
+        RatatuiColor::Green => ColorSpec::GREEN,
+        RatatuiColor::Yellow => ColorSpec::YELLOW,
+        RatatuiColor::Blue => ColorSpec::BLUE,
+        RatatuiColor::Magenta => ColorSpec::MAGENTA,
+        RatatuiColor::Cyan => ColorSpec::CYAN,
+        RatatuiColor::Gray => ColorSpec::WHITE,
+        RatatuiColor::DarkGray => ColorSpec::BRIGHT_BLACK,
+        RatatuiColor::LightRed => ColorSpec::BRIGHT_RED,
+        RatatuiColor::LightGreen => ColorSpec::BRIGHT_GREEN,
+        RatatuiColor::LightYellow => ColorSpec::BRIGHT_YELLOW,
+        RatatuiColor::LightBlue => ColorSpec::BRIGHT_BLUE,
+        RatatuiColor::LightMagenta => ColorSpec::BRIGHT_MAGENTA,
+        RatatuiColor::LightCyan => ColorSpec::BRIGHT_CYAN,
+        RatatuiColor::White => ColorSpec::BRIGHT_WHITE,
+        RatatuiColor::Indexed(index) => ColorSpec::PaletteIndex(index),
+        RatatuiColor::Rgb(r, g, b) => RgbColor::new(r, g, b).into(),
+    }
 }

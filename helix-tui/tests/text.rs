@@ -1,5 +1,5 @@
-use helix_tui::text::{Span, Spans, StyledGrapheme, Text};
-use helix_view::graphics::{Color, Modifier, Style};
+use helix_tui::style::{Color, Modifier, Style, Styled};
+use helix_tui::text::{Line, Span, StyledGrapheme, Text};
 
 // Text
 #[test]
@@ -23,7 +23,7 @@ fn patch_style() {
     let full_styled_text = Text::styled(String::from("The first line\nThe second line"), style2);
     assert_ne!(half_styled_text, full_styled_text);
 
-    half_styled_text.patch_style(Style::default().bg(Color::Black));
+    half_styled_text = half_styled_text.patch_style(Style::default().bg(Color::Black));
     assert_eq!(half_styled_text, full_styled_text);
 }
 
@@ -36,7 +36,7 @@ fn set_style() {
     let styled_text = Text::styled(String::from("The first line\nThe second line"), style);
     assert_ne!(raw_text, styled_text);
 
-    raw_text.set_style(style);
+    raw_text = raw_text.set_style(style);
     assert_eq!(raw_text, styled_text);
 }
 
@@ -73,7 +73,6 @@ fn styled_graphemes() {
                     fg: Some(Color::Yellow),
                     bg: Some(Color::Black),
                     underline_color: None,
-                    underline_style: None,
                     add_modifier: Modifier::empty(),
                     sub_modifier: Modifier::empty(),
                 },
@@ -84,7 +83,6 @@ fn styled_graphemes() {
                     fg: Some(Color::Yellow),
                     bg: Some(Color::Black),
                     underline_color: None,
-                    underline_style: None,
                     add_modifier: Modifier::empty(),
                     sub_modifier: Modifier::empty(),
                 },
@@ -95,7 +93,6 @@ fn styled_graphemes() {
                     fg: Some(Color::Yellow),
                     bg: Some(Color::Black),
                     underline_color: None,
-                    underline_style: None,
                     add_modifier: Modifier::empty(),
                     sub_modifier: Modifier::empty(),
                 },
@@ -106,7 +103,6 @@ fn styled_graphemes() {
                     fg: Some(Color::Yellow),
                     bg: Some(Color::Black),
                     underline_color: None,
-                    underline_style: None,
                     add_modifier: Modifier::empty(),
                     sub_modifier: Modifier::empty(),
                 },
@@ -116,11 +112,11 @@ fn styled_graphemes() {
     );
 }
 
-// Spans
+// Line
 
 #[test]
-fn spans_width() {
-    let spans = Spans::from(vec![
+fn line_width() {
+    let spans = Line::from(vec![
         Span::styled("My", Style::default().fg(Color::Yellow)),
         Span::raw(" text"),
     ]);

@@ -1,10 +1,7 @@
 use bitflags::bitflags;
+pub use ratatui::layout::{Margin, Rect};
 use serde::{Deserialize, Serialize};
-use std::{
-    cmp::{max, min},
-    fmt,
-    str::FromStr,
-};
+use std::{fmt, str::FromStr};
 
 #[must_use]
 const fn from_nibble(h: u8) -> u8 {
@@ -63,106 +60,19 @@ pub enum CursorKind {
     Hidden,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
-pub struct Margin {
-    pub horizontal: u16,
-    pub vertical: u16,
+/// Helix-specific rectangle conveniences layered on Ratatui's geometry type.
+pub trait RectExt {
+    fn clip_left(self, width: u16) -> Rect;
+    fn clip_right(self, width: u16) -> Rect;
+    fn clip_top(self, height: u16) -> Rect;
+    fn clip_bottom(self, height: u16) -> Rect;
+    fn with_height(self, height: u16) -> Rect;
+    fn with_width(self, width: u16) -> Rect;
 }
 
-impl Margin {
-    pub fn none() -> Self {
-        Self {
-            horizontal: 0,
-            vertical: 0,
-        }
-    }
-
-    /// Set uniform margin for all sides.
-    pub const fn all(value: u16) -> Self {
-        Self {
-            horizontal: value,
-            vertical: value,
-        }
-    }
-
-    /// Set the margin of left and right sides to specified value.
-    pub const fn horizontal(value: u16) -> Self {
-        Self {
-            horizontal: value,
-            vertical: 0,
-        }
-    }
-
-    /// Set the margin of top and bottom sides to specified value.
-    pub const fn vertical(value: u16) -> Self {
-        Self {
-            horizontal: 0,
-            vertical: value,
-        }
-    }
-
-    /// Get the total width of the margin (left + right)
-    pub const fn width(&self) -> u16 {
-        self.horizontal * 2
-    }
-
-    /// Get the total height of the margin (top + bottom)
-    pub const fn height(&self) -> u16 {
-        self.vertical * 2
-    }
-}
-
-/// A simple rectangle used in the computation of the layout and to give widgets an hint about the
-/// area they are supposed to render to. (x, y) = (0, 0) is at the top left corner of the screen.
-#[derive(Debug, Default, Clone, Copy, Hash, PartialEq, Eq)]
-pub struct Rect {
-    pub x: u16,
-    pub y: u16,
-    pub width: u16,
-    pub height: u16,
-}
-
-impl Rect {
-    /// Creates a new rect, with width and height
-    pub fn new(x: u16, y: u16, width: u16, height: u16) -> Rect {
-        Rect {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    #[inline]
-    pub fn area(self) -> usize {
-        (self.width as usize) * (self.height as usize)
-    }
-
-    #[inline]
-    pub fn left(self) -> u16 {
-        self.x
-    }
-
-    #[inline]
-    pub fn right(self) -> u16 {
-        self.x.saturating_add(self.width)
-    }
-
-    #[inline]
-    pub fn top(self) -> u16 {
-        self.y
-    }
-
-    #[inline]
-    pub fn bottom(self) -> u16 {
-        self.y.saturating_add(self.height)
-    }
-
-    // Returns a new Rect with width reduced from the left side.
-    // This changes the `x` coordinate and clamps it to the right
-    // edge of the original Rect.
-    pub fn clip_left(self, width: u16) -> Rect {
-        let width = std::cmp::min(width, self.width);
+impl RectExt for Rect {
+    fn clip_left(self, width: u16) -> Rect {
+        let width = width.min(self.width);
         Rect {
             x: self.x.saturating_add(width),
             width: self.width.saturating_sub(width),
@@ -170,20 +80,15 @@ impl Rect {
         }
     }
 
-    // Returns a new Rect with width reduced from the right side.
-    // This does _not_ change the `x` coordinate.
-    pub fn clip_right(self, width: u16) -> Rect {
+    fn clip_right(self, width: u16) -> Rect {
         Rect {
             width: self.width.saturating_sub(width),
             ..self
         }
     }
 
-    // Returns a new Rect with height reduced from the top.
-    // This changes the `y` coordinate and clamps it to the bottom
-    // edge of the original Rect.
-    pub fn clip_top(self, height: u16) -> Rect {
-        let height = std::cmp::min(height, self.height);
+    fn clip_top(self, height: u16) -> Rect {
+        let height = height.min(self.height);
         Rect {
             y: self.y.saturating_add(height),
             height: self.height.saturating_sub(height),
@@ -191,90 +96,19 @@ impl Rect {
         }
     }
 
-    // Returns a new Rect with height reduced from the bottom.
-    // This does _not_ change the `y` coordinate.
-    pub fn clip_bottom(self, height: u16) -> Rect {
+    fn clip_bottom(self, height: u16) -> Rect {
         Rect {
             height: self.height.saturating_sub(height),
             ..self
         }
     }
 
-    pub fn with_height(self, height: u16) -> Rect {
-        // new height may make area > u16::max_value, so use new()
+    fn with_height(self, height: u16) -> Rect {
         Self::new(self.x, self.y, self.width, height)
     }
 
-    pub fn with_width(self, width: u16) -> Rect {
+    fn with_width(self, width: u16) -> Rect {
         Self::new(self.x, self.y, width, self.height)
-    }
-
-    pub fn inner(self, margin: Margin) -> Rect {
-        if self.width < margin.width() || self.height < margin.height() {
-            Rect::default()
-        } else {
-            Rect {
-                x: self.x + margin.horizontal,
-                y: self.y + margin.vertical,
-                width: self.width - margin.width(),
-                height: self.height - margin.height(),
-            }
-        }
-    }
-
-    /// Calculate the union between two [`Rect`]s.
-    pub fn union(self, other: Rect) -> Rect {
-        // Example:
-        //
-        // If `Rect` A is positioned at `(0, 0)` with a width and height of `5`,
-        // and `Rect` B is positioned at `(5, 0)` with a width and height of `2`,
-        // then this is the resulting union:
-        //
-        // x1 = min(0, 5) => x1 = 0
-        // y1 = min(0, 0) => y1 = 0
-        // x2 = max(0 + 5, 5 + 2) => x2 = 7
-        // y2 = max(0 + 5, 0 + 2) => y2 = 5
-        let x1 = min(self.x, other.x);
-        let y1 = min(self.y, other.y);
-        let x2 = max(self.x + self.width, other.x + other.width);
-        let y2 = max(self.y + self.height, other.y + other.height);
-        Rect {
-            x: x1,
-            y: y1,
-            width: x2 - x1,
-            height: y2 - y1,
-        }
-    }
-
-    /// Calculate the intersection between two [`Rect`]s.
-    pub fn intersection(self, other: Rect) -> Rect {
-        // Example:
-        //
-        // If `Rect` A is positioned at `(0, 0)` with a width and height of `5`,
-        // and `Rect` B is positioned at `(5, 0)` with a width and height of `2`,
-        // then this is the resulting intersection:
-        //
-        // x1 = max(0, 5) => x1 = 5
-        // y1 = max(0, 0) => y1 = 0
-        // x2 = min(0 + 5, 5 + 2) => x2 = 5
-        // y2 = min(0 + 5, 0 + 2) => y2 = 2
-        let x1 = max(self.x, other.x);
-        let y1 = max(self.y, other.y);
-        let x2 = min(self.x + self.width, other.x + other.width);
-        let y2 = min(self.y + self.height, other.y + other.height);
-        Rect {
-            x: x1,
-            y: y1,
-            width: x2.saturating_sub(x1),
-            height: y2.saturating_sub(y1),
-        }
-    }
-
-    pub fn intersects(self, other: Rect) -> bool {
-        self.x < other.x + other.width
-            && self.x + self.width > other.x
-            && self.y < other.y + other.height
-            && self.y + self.height > other.y
     }
 }
 
@@ -367,6 +201,32 @@ impl Color {
     }
 }
 
+impl From<Color> for ratatui::style::Color {
+    fn from(color: Color) -> Self {
+        match color {
+            Color::Reset => Self::Reset,
+            Color::Black => Self::Black,
+            Color::Red => Self::Red,
+            Color::Green => Self::Green,
+            Color::Yellow => Self::Yellow,
+            Color::Blue => Self::Blue,
+            Color::Magenta => Self::Magenta,
+            Color::Cyan => Self::Cyan,
+            Color::Gray => Self::DarkGray,
+            Color::LightRed => Self::LightRed,
+            Color::LightGreen => Self::LightGreen,
+            Color::LightYellow => Self::LightYellow,
+            Color::LightBlue => Self::LightBlue,
+            Color::LightMagenta => Self::LightMagenta,
+            Color::LightCyan => Self::LightCyan,
+            Color::LightGray => Self::Gray,
+            Color::White => Self::White,
+            Color::Rgb(r, g, b) => Self::Rgb(r, g, b),
+            Color::Indexed(index) => Self::Indexed(index),
+        }
+    }
+}
+
 #[cfg(feature = "term")]
 impl From<Color> for termina::style::ColorSpec {
     fn from(color: Color) -> Self {
@@ -430,6 +290,43 @@ pub enum UnderlineStyle {
     Dotted,
     Dashed,
     DoubleLine,
+}
+
+// Ratatui models whether text is underlined and its color, but not the shape of
+// the underline. Preserve Helix's richer underline styles in currently-unused
+// modifier bits so the Helix terminal backends can render them.
+const RATATUI_UNDERLINE_STYLE_MASK: ratatui::style::Modifier =
+    ratatui::style::Modifier::from_bits_retain(0x0e00);
+
+impl UnderlineStyle {
+    fn ratatui_modifier(self) -> ratatui::style::Modifier {
+        let bits = match self {
+            Self::Reset | Self::Line => 0,
+            Self::Curl => 0x0200,
+            Self::Dotted => 0x0400,
+            Self::Dashed => 0x0600,
+            Self::DoubleLine => 0x0800,
+        };
+        let shape = ratatui::style::Modifier::from_bits_retain(bits);
+        if self == Self::Reset {
+            shape
+        } else {
+            shape | ratatui::style::Modifier::UNDERLINED
+        }
+    }
+
+    pub fn from_ratatui_modifier(modifier: ratatui::style::Modifier) -> Self {
+        if !modifier.contains(ratatui::style::Modifier::UNDERLINED) {
+            return Self::Reset;
+        }
+        match (modifier & RATATUI_UNDERLINE_STYLE_MASK).bits() {
+            0x0200 => Self::Curl,
+            0x0400 => Self::Dotted,
+            0x0600 => Self::Dashed,
+            0x0800 => Self::DoubleLine,
+            _ => Self::Line,
+        }
+    }
 }
 
 impl FromStr for UnderlineStyle {
@@ -497,6 +394,37 @@ bitflags! {
         const REVERSED          = 0b0000_0100_0000;
         const HIDDEN            = 0b0000_1000_0000;
         const CROSSED_OUT       = 0b0001_0000_0000;
+    }
+}
+
+impl From<Modifier> for ratatui::style::Modifier {
+    fn from(modifier: Modifier) -> Self {
+        let mut result = Self::empty();
+        if modifier.contains(Modifier::BOLD) {
+            result.insert(Self::BOLD);
+        }
+        if modifier.contains(Modifier::DIM) {
+            result.insert(Self::DIM);
+        }
+        if modifier.contains(Modifier::ITALIC) {
+            result.insert(Self::ITALIC);
+        }
+        if modifier.contains(Modifier::SLOW_BLINK) {
+            result.insert(Self::SLOW_BLINK);
+        }
+        if modifier.contains(Modifier::RAPID_BLINK) {
+            result.insert(Self::RAPID_BLINK);
+        }
+        if modifier.contains(Modifier::REVERSED) {
+            result.insert(Self::REVERSED);
+        }
+        if modifier.contains(Modifier::HIDDEN) {
+            result.insert(Self::HIDDEN);
+        }
+        if modifier.contains(Modifier::CROSSED_OUT) {
+            result.insert(Self::CROSSED_OUT);
+        }
+        result
     }
 }
 
@@ -751,6 +679,39 @@ impl Style {
     }
 }
 
+impl From<Style> for ratatui::style::Style {
+    fn from(style: Style) -> Self {
+        let mut add_modifier: ratatui::style::Modifier = style.add_modifier.into();
+        let mut sub_modifier: ratatui::style::Modifier = style.sub_modifier.into();
+        match style.underline_style {
+            Some(UnderlineStyle::Reset) => {
+                add_modifier
+                    .remove(ratatui::style::Modifier::UNDERLINED | RATATUI_UNDERLINE_STYLE_MASK);
+                sub_modifier
+                    .insert(ratatui::style::Modifier::UNDERLINED | RATATUI_UNDERLINE_STYLE_MASK);
+            }
+            Some(underline_style) => {
+                let encoded = underline_style.ratatui_modifier();
+                let underline_bits =
+                    ratatui::style::Modifier::UNDERLINED | RATATUI_UNDERLINE_STYLE_MASK;
+                add_modifier.remove(underline_bits);
+                add_modifier.insert(encoded);
+                sub_modifier.insert(underline_bits);
+                sub_modifier.remove(encoded);
+            }
+            None => {}
+        }
+
+        ratatui::style::Style {
+            fg: style.fg.map(Into::into),
+            bg: style.bg.map(Into::into),
+            underline_color: style.underline_color.map(Into::into),
+            add_modifier,
+            sub_modifier,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -837,6 +798,45 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn ratatui_style_preserves_underline_shapes() {
+        let styles = [
+            UnderlineStyle::Reset,
+            UnderlineStyle::Line,
+            UnderlineStyle::Curl,
+            UnderlineStyle::Dotted,
+            UnderlineStyle::Dashed,
+            UnderlineStyle::DoubleLine,
+        ];
+
+        for underline_style in styles {
+            let style =
+                ratatui::style::Style::from(Style::default().underline_style(underline_style));
+            assert_eq!(
+                UnderlineStyle::from_ratatui_modifier(style.add_modifier),
+                underline_style
+            );
+        }
+
+        assert!(
+            (ratatui::style::Modifier::all() & RATATUI_UNDERLINE_STYLE_MASK).is_empty(),
+            "Ratatui assigned one of Helix's underline transport bits"
+        );
+
+        let mut cell = ratatui::buffer::Cell::default();
+        cell.set_style(Style::default().underline_style(UnderlineStyle::Curl));
+        cell.set_style(Style::default().underline_style(UnderlineStyle::Dotted));
+        assert_eq!(
+            UnderlineStyle::from_ratatui_modifier(cell.modifier),
+            UnderlineStyle::Dotted
+        );
+        cell.set_style(Style::default().underline_style(UnderlineStyle::Reset));
+        assert_eq!(
+            UnderlineStyle::from_ratatui_modifier(cell.modifier),
+            UnderlineStyle::Reset
+        );
     }
 
     #[test]
