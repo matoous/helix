@@ -100,3 +100,5 @@ impl<T: Item> Component for Select<T> {
         self.options.render(menu_area, surface, cx);
     }
 }
+use helix_view::graphics::RectExt as _;
+use tui::buffer::BufferExt as _;

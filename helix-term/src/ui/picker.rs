@@ -22,7 +22,7 @@ use tokio::sync::mpsc::Sender;
 use tui::{
     buffer::Buffer as Surface,
     layout::Constraint,
-    text::{Span, Spans},
+    text::{Line, Span},
     widgets::{Block, BorderType, Cell, Row, Table},
 };
 
@@ -47,7 +47,6 @@ use helix_core::{
 use helix_view::{
     editor::Action,
     graphics::{CursorKind, Margin, Modifier, Rect},
-    theme::Style,
     view::ViewPosition,
     Document, DocumentId, Editor,
 };
@@ -228,7 +227,7 @@ impl<T, D> Column<T, D> {
     }
 
     fn format_text<'a>(&self, item: &'a T, data: &'a D) -> Cow<'a, str> {
-        let text: String = self.format(item, data).content.into();
+        let text = self.format(item, data).content.to_string();
         text.into()
     }
 }
@@ -734,10 +733,10 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         // -- Separator
         let sep_style = cx.editor.theme.get("ui.background.separator");
-        let borders = BorderType::line_symbols(BorderType::Plain);
+        let borders = BorderType::border_symbols(BorderType::Plain);
         for x in inner.left()..inner.right() {
-            if let Some(cell) = surface.get_mut(x, inner.y + 1) {
-                cell.set_symbol(borders.horizontal).set_style(sep_style);
+            if let Some(cell) = surface.cell_mut((x, inner.y + 1)) {
+                cell.set_symbol(borders.horizontal_top).set_style(sep_style);
             }
         }
 
@@ -782,12 +781,15 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     let mut next_highlight_idx = indices.next().unwrap_or(u32::MAX);
                     let mut span_list = Vec::new();
                     let mut current_span = String::new();
-                    let mut current_style = Style::default();
+                    let mut current_style = tui::style::Style::default();
                     let mut grapheme_idx = 0u32;
                     let mut width = 0;
 
-                    let spans: &[Span] =
-                        cell.content.lines.first().map_or(&[], |it| it.0.as_slice());
+                    let spans: &[Span] = cell
+                        .content
+                        .lines
+                        .first()
+                        .map_or(&[], |line| line.spans.as_slice());
                     for span in spans {
                         // this looks like a bug on first glance, we are iterating
                         // graphemes but treating them as char indices. The reason that
@@ -797,7 +799,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                         for grapheme in span.content.graphemes(true) {
                             let style = if grapheme_idx == next_highlight_idx {
                                 next_highlight_idx = indices.next().unwrap_or(u32::MAX);
-                                span.style.patch(highlight_style)
+                                span.style.patch(tui::style::Style::from(highlight_style))
                             } else {
                                 span.style
                             };
@@ -815,7 +817,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
                     }
 
                     span_list.push(Span::styled(current_span, current_style));
-                    cell = Cell::from(Spans::from(span_list));
+                    cell = Cell::from(Line::from(span_list));
                     matcher_index += 1;
                     width
                 } else {
@@ -868,15 +870,9 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
 
         use tui::widgets::TableState;
 
-        table.render_table(
-            inner,
-            surface,
-            &mut TableState {
-                offset: 0,
-                selected: Some(cursor as usize),
-            },
-            self.truncate_start,
-        );
+        let mut table_state = TableState::default().with_selected(Some(cursor as usize));
+
+        table.render_table(inner, surface, &mut table_state, self.truncate_start);
     }
 
     fn render_preview(&mut self, area: Rect, surface: &mut Surface, cx: &mut Context) {
@@ -892,7 +888,7 @@ impl<T: 'static + Send + Sync, D: 'static + Send + Sync> Picker<T, D> {
         // calculate the inner area inside the box
         let inner = BLOCK.inner(area);
         // 1 column gap on either side
-        let margin = Margin::horizontal(1);
+        let margin = Margin::new(1, 0);
         let inner = inner.inner(margin);
         BLOCK.render(area, surface);
 
@@ -1205,3 +1201,5 @@ impl<T: 'static + Send + Sync, D> Drop for Picker<T, D> {
 }
 
 type PickerCallback<T> = Box<dyn Fn(&mut Context, &T, Action)>;
+use helix_view::graphics::RectExt as _;
+use tui::buffer::BufferExt as _;

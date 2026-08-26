@@ -1,4 +1,4 @@
-use crate::{backend::Backend, buffer::Cell, terminal::Config};
+use crate::{backend::BackendExt, terminal::Config};
 use crossterm::{
     cursor::{Hide, MoveTo, SetCursorStyle, Show},
     event::{
@@ -14,11 +14,17 @@ use crossterm::{
     terminal::{self, BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate},
     Command,
 };
-use helix_view::graphics::{Color, CursorKind, Modifier, Rect, UnderlineStyle};
-use once_cell::sync::OnceCell;
+use helix_view::graphics::{CursorKind, Rect, UnderlineStyle};
+use ratatui::{
+    backend::{Backend, ClearType as RatatuiClearType, WindowSize as RatatuiWindowSize},
+    buffer::Cell,
+    layout::{Position, Size},
+    style::{Color, Modifier},
+};
 use std::{
     fmt,
     io::{self, Write},
+    sync::OnceLock,
 };
 use termini::TermInfo;
 
@@ -99,7 +105,7 @@ pub struct CrosstermBackend<W: Write> {
     buffer: W,
     config: Config,
     capabilities: Capabilities,
-    supports_keyboard_enhancement_protocol: OnceCell<bool>,
+    supports_keyboard_enhancement_protocol: OnceLock<bool>,
     mouse_capture_enabled: bool,
     supports_bracketed_paste: bool,
 }
@@ -117,7 +123,7 @@ where
             buffer,
             capabilities: Capabilities::from_env_or_default(&config),
             config,
-            supports_keyboard_enhancement_protocol: OnceCell::new(),
+            supports_keyboard_enhancement_protocol: OnceLock::new(),
             mouse_capture_enabled: false,
             supports_bracketed_paste: true,
         }
@@ -154,7 +160,7 @@ where
     }
 }
 
-impl<W> Backend for CrosstermBackend<W>
+impl<W> CrosstermBackend<W>
 where
     W: Write,
 {
@@ -252,33 +258,41 @@ where
             if cell.fg != fg || cell.bg != bg {
                 queue!(
                     self.buffer,
-                    SetColors(Colors::new(cell.fg.into(), cell.bg.into()))
+                    SetColors(Colors::new(
+                        color_to_crossterm(cell.fg),
+                        color_to_crossterm(cell.bg)
+                    ))
                 )?;
                 fg = cell.fg;
                 bg = cell.bg;
             }
 
-            let mut new_underline_style = cell.underline_style;
             if self.capabilities.has_extended_underlines {
                 if cell.underline_color != underline_color {
-                    let color = CColor::from(cell.underline_color);
+                    let color = color_to_crossterm(cell.underline_color);
                     queue!(self.buffer, SetUnderlineColor(color))?;
                     underline_color = cell.underline_color;
                 }
-            } else {
-                match new_underline_style {
-                    UnderlineStyle::Reset | UnderlineStyle::Line => (),
-                    _ => new_underline_style = UnderlineStyle::Line,
-                }
             }
 
+            let mut new_underline_style = UnderlineStyle::from_ratatui_modifier(cell.modifier);
+            if !self.capabilities.has_extended_underlines
+                && !matches!(
+                    new_underline_style,
+                    UnderlineStyle::Reset | UnderlineStyle::Line
+                )
+            {
+                new_underline_style = UnderlineStyle::Line;
+            }
             if new_underline_style != underline_style {
-                let attr = CAttribute::from(new_underline_style);
-                queue!(self.buffer, SetAttribute(attr))?;
+                queue!(
+                    self.buffer,
+                    SetAttribute(CAttribute::from(new_underline_style))
+                )?;
                 underline_style = new_underline_style;
             }
 
-            queue!(self.buffer, Print(&cell.symbol))?;
+            queue!(self.buffer, Print(cell.symbol()))?;
         }
 
         queue!(
@@ -294,7 +308,7 @@ where
         queue!(self.buffer, Hide)
     }
 
-    fn show_cursor(&mut self, kind: CursorKind) -> io::Result<()> {
+    fn show_cursor_kind(&mut self, kind: CursorKind) -> io::Result<()> {
         let shape = match kind {
             CursorKind::Block => SetCursorStyle::SteadyBlock,
             CursorKind::Bar => SetCursorStyle::SteadyBar,
@@ -341,6 +355,109 @@ where
 
     fn set_background_color(&mut self, _color: Option<helix_view::theme::Color>) -> io::Result<()> {
         Ok(())
+    }
+}
+
+impl<W> Backend for CrosstermBackend<W>
+where
+    W: Write,
+{
+    type Error = io::Error;
+
+    fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
+    where
+        I: Iterator<Item = (u16, u16, &'a Cell)>,
+    {
+        CrosstermBackend::draw(self, content)
+    }
+
+    fn hide_cursor(&mut self) -> io::Result<()> {
+        CrosstermBackend::hide_cursor(self)
+    }
+
+    fn show_cursor(&mut self) -> io::Result<()> {
+        CrosstermBackend::show_cursor_kind(self, CursorKind::Block)
+    }
+
+    fn get_cursor_position(&mut self) -> io::Result<Position> {
+        let (x, y) = crossterm::cursor::position()?;
+        Ok(Position::new(x, y))
+    }
+
+    fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
+        let Position { x, y } = position.into();
+        CrosstermBackend::set_cursor(self, x, y)
+    }
+
+    fn clear(&mut self) -> io::Result<()> {
+        CrosstermBackend::clear(self)
+    }
+
+    fn clear_region(&mut self, clear_type: RatatuiClearType) -> io::Result<()> {
+        let clear_type = match clear_type {
+            RatatuiClearType::All => ClearType::All,
+            RatatuiClearType::AfterCursor => ClearType::FromCursorDown,
+            RatatuiClearType::BeforeCursor => ClearType::FromCursorUp,
+            RatatuiClearType::CurrentLine => ClearType::CurrentLine,
+            RatatuiClearType::UntilNewLine => ClearType::UntilNewLine,
+        };
+        queue!(self.buffer, Clear(clear_type))
+    }
+
+    fn size(&self) -> io::Result<Size> {
+        Ok(CrosstermBackend::size(self)?.as_size())
+    }
+
+    fn window_size(&mut self) -> io::Result<RatatuiWindowSize> {
+        Ok(RatatuiWindowSize {
+            columns_rows: Backend::size(self)?,
+            pixels: Size::ZERO,
+        })
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        CrosstermBackend::flush(self)
+    }
+}
+
+impl<W> BackendExt for CrosstermBackend<W>
+where
+    W: Write,
+{
+    fn claim(&mut self) -> io::Result<()> {
+        CrosstermBackend::claim(self)
+    }
+
+    fn reconfigure(&mut self, config: Config) -> io::Result<()> {
+        CrosstermBackend::reconfigure(self, config)
+    }
+
+    fn restore(&mut self) -> io::Result<()> {
+        CrosstermBackend::restore(self)
+    }
+
+    fn show_cursor_kind(&mut self, kind: CursorKind) -> io::Result<()> {
+        CrosstermBackend::show_cursor_kind(self, kind)
+    }
+
+    fn start_sync(&mut self) -> io::Result<()> {
+        CrosstermBackend::start_sync(self)
+    }
+
+    fn end_sync(&mut self) -> io::Result<()> {
+        CrosstermBackend::end_sync(self)
+    }
+
+    fn supports_true_color(&self) -> bool {
+        CrosstermBackend::supports_true_color(self)
+    }
+
+    fn get_theme_mode(&self) -> Option<helix_view::theme::Mode> {
+        CrosstermBackend::get_theme_mode(self)
+    }
+
+    fn set_background_color(&mut self, color: Option<helix_view::theme::Color>) -> io::Result<()> {
+        CrosstermBackend::set_background_color(self, color)
     }
 }
 
@@ -464,5 +581,29 @@ impl Command for SetUnderlineColor {
             std::io::ErrorKind::Other,
             "SetUnderlineColor not supported by winapi.",
         ))
+    }
+}
+
+fn color_to_crossterm(color: Color) -> CColor {
+    match color {
+        Color::Reset => CColor::Reset,
+        Color::Black => CColor::Black,
+        Color::Red => CColor::DarkRed,
+        Color::Green => CColor::DarkGreen,
+        Color::Yellow => CColor::DarkYellow,
+        Color::Blue => CColor::DarkBlue,
+        Color::Magenta => CColor::DarkMagenta,
+        Color::Cyan => CColor::DarkCyan,
+        Color::Gray => CColor::Grey,
+        Color::DarkGray => CColor::DarkGrey,
+        Color::LightRed => CColor::Red,
+        Color::LightGreen => CColor::Green,
+        Color::LightYellow => CColor::Yellow,
+        Color::LightBlue => CColor::Blue,
+        Color::LightMagenta => CColor::Magenta,
+        Color::LightCyan => CColor::Cyan,
+        Color::White => CColor::White,
+        Color::Indexed(index) => CColor::AnsiValue(index),
+        Color::Rgb(r, g, b) => CColor::Rgb { r, g, b },
     }
 }

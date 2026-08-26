@@ -11,7 +11,7 @@ use helix_lsp::block_on;
 use helix_view::editor::Breakpoint;
 
 use serde_json::{to_value, Value};
-use tui::text::Spans;
+use tui::text::Line;
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -568,7 +568,7 @@ pub fn dap_variables(cx: &mut Context) {
         use tui::text::Span;
         let response = block_on(debugger.variables(scope.variables_reference));
 
-        variables.push(Spans::from(Span::styled(
+        variables.push(Line::from(Span::styled(
             format!("▸ {}", scope.name),
             scope_style,
         )));
@@ -585,7 +585,7 @@ pub fn dap_variables(cx: &mut Context) {
                 }
                 spans.push(Span::raw(" = "));
                 spans.push(Span::styled(var.value.to_owned(), text_style));
-                variables.push(Spans::from(spans));
+                variables.push(Line::from(spans));
             }
         }
     }

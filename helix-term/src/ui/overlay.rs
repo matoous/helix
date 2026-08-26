@@ -83,3 +83,4 @@ impl<T: Component + 'static> Component for Overlay<T> {
         self.content.id()
     }
 }
+use helix_view::graphics::RectExt as _;

@@ -367,13 +367,14 @@ impl<T: Item + 'static> Component for Menu<T> {
 
         use tui::widgets::TableState;
 
+        let mut table_state = TableState::default()
+            .with_offset(scroll)
+            .with_selected(self.cursor);
+
         table.render_table(
             area.clip_left(Self::LEFT_PADDING as u16).clip_right(1),
             surface,
-            &mut TableState {
-                offset: scroll,
-                selected: self.cursor,
-            },
+            &mut table_state,
             false,
         );
 
@@ -409,13 +410,25 @@ impl<T: Item + 'static> Component for Menu<T> {
                 if scroll_line <= i && i < scroll_line + scroll_height {
                     // Draw scroll thumb
                     cell.set_symbol(half_block);
-                    cell.set_fg(scroll_style.fg.unwrap_or(helix_view::theme::Color::Reset));
+                    cell.set_fg(
+                        scroll_style
+                            .fg
+                            .unwrap_or(helix_view::theme::Color::Reset)
+                            .into(),
+                    );
                 } else if !render_borders {
                     // Draw scroll track
                     cell.set_symbol(half_block);
-                    cell.set_fg(scroll_style.bg.unwrap_or(helix_view::theme::Color::Reset));
+                    cell.set_fg(
+                        scroll_style
+                            .bg
+                            .unwrap_or(helix_view::theme::Color::Reset)
+                            .into(),
+                    );
                 }
             }
         }
     }
 }
+use helix_view::graphics::RectExt as _;
+use tui::buffer::BufferExt as _;

@@ -1,9 +1,34 @@
 pub mod backend;
-pub mod buffer;
-pub mod layout;
-pub mod symbols;
+mod surface;
+mod table;
 pub mod terminal;
-pub mod text;
-pub mod widgets;
 
-pub use self::terminal::{Terminal, TerminalOptions, Viewport};
+pub mod buffer {
+    pub use crate::surface::BufferExt;
+    pub use ratatui::buffer::*;
+}
+
+pub mod layout {
+    pub use ratatui::layout::*;
+}
+
+pub mod symbols {
+    pub use ratatui::symbols::*;
+}
+
+pub mod style {
+    pub use ratatui::style::*;
+}
+
+pub mod text {
+    pub use ratatui::text::*;
+}
+
+pub mod widgets {
+    pub use crate::table::{Cell, Row, Table};
+    pub use ratatui::widgets::{
+        Block, BorderType, Borders, Paragraph, StatefulWidget, TableState, Widget, Wrap,
+    };
+}
+
+pub use ratatui::{Frame, Terminal, TerminalOptions, Viewport};

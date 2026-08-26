@@ -27,12 +27,13 @@ impl Component for Info {
             .title(self.title.as_ref())
             .border_style(popup_style);
 
-        let margin = Margin::horizontal(1);
+        let margin = Margin::new(1, 0);
         let inner = block.inner(area).inner(margin);
         block.render(area, surface);
 
-        Paragraph::new(&Text::from(self.text.as_str()))
+        Paragraph::new(Text::from(self.text.as_str()))
             .style(text_style)
             .render(inner, surface);
     }
 }
+use tui::buffer::BufferExt as _;
