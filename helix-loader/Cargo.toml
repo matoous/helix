@@ -31,7 +31,7 @@ log = "0.4"
 
 # cloning/compiling tree-sitter grammars
 cc = { version = "1" }
-threadpool = { version = "1.0" }
+threadpool = { version = "1.8" }
 tempfile.workspace = true
 
 tree-house.workspace = true

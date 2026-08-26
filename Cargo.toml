@@ -1,5 +1,5 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
   "helix-core",
   "helix-view",
@@ -43,14 +43,14 @@ nucleo = "0.5.0"
 slotmap = "1.1.1"
 thiserror = "2.0"
 tempfile = "3.27.0"
-bitflags = "2.12"
+bitflags = "2.13"
 unicode-segmentation = "1.13"
 ropey = { version = "1.6.1", default-features = false, features = ["simd"] }
 foldhash = "0.2"
 parking_lot = "0.12"
 futures-executor = "0.3"
 futures-util = { version = "0.3", features = ["std", "async-await"], default-features = false }
-tokio-stream = "0.1.18"
+tokio-stream = "0.1.19"
 toml = "1.1"
 termina = "0.3"
 sonic-rs = "0.5"
